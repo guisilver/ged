@@ -1,4 +1,5 @@
-package br.com.oma.omaonline.managedbeans;
+
+package br.com.oma.sip.bean;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -8,6 +9,7 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.Serializable;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.SQLException;
@@ -15,13 +17,16 @@ import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.text.ParseException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
+import javax.annotation.PostConstruct;
 import javax.faces.FacesException;
 import javax.faces.application.FacesMessage;
+import javax.faces.application.NavigationHandler;
 import javax.faces.bean.ManagedBean;
 import javax.faces.bean.ManagedProperty;
 import javax.faces.bean.ViewScoped;
@@ -30,6 +35,7 @@ import javax.faces.component.UIInput;
 import javax.faces.context.FacesContext;
 import javax.servlet.ServletContext;
 
+import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.joda.time.DateTime;
 import org.primefaces.component.datatable.DataTable;
@@ -38,6 +44,7 @@ import org.primefaces.event.FileUploadEvent;
 import org.primefaces.model.DefaultStreamedContent;
 import org.primefaces.model.StreamedContent;
 
+import br.com.oma.imagem.Imagem;
 import br.com.oma.intranet.dao.ControleContasNovoDAO;
 import br.com.oma.intranet.dao.LancamentoDAO;
 import br.com.oma.intranet.entidades.intra_condominios;
@@ -45,8 +52,10 @@ import br.com.oma.intranet.entidades.intra_controle_contas2;
 import br.com.oma.intranet.entidades.intra_controle_contas_detalhamento;
 import br.com.oma.intranet.entidades.intra_grupo_gerente;
 import br.com.oma.intranet.entidades.intra_grupo_permissao;
+import br.com.oma.intranet.entidades.intra_plano_contas;
 import br.com.oma.intranet.managedbeans.SessaoMB;
 import br.com.oma.intranet.util.CodigoBarras;
+import br.com.oma.intranet.util.DownloadUtil;
 import br.com.oma.intranet.util.EnvioEmail;
 import br.com.oma.intranet.util.IntranetException;
 import br.com.oma.intranet.util.Mensagens;
@@ -54,7 +63,6 @@ import br.com.oma.intranet.util.PDFUtil;
 import br.com.oma.intranet.util.RNException;
 import br.com.oma.intranet.util.ValidaCPFCNPJ;
 import br.com.oma.omaonline.dao.BlackListDAO;
-import br.com.oma.omaonline.dao.FinanceiroDAO;
 import br.com.oma.omaonline.dao.FinanceiroImpostosDAO;
 import br.com.oma.omaonline.dao.FinanceiroSIPDAO;
 import br.com.oma.omaonline.entidades.atbancos;
@@ -71,22 +79,22 @@ import br.com.oma.omaonline.entidades.financeiro_imagem;
 import br.com.oma.omaonline.entidades.rateio;
 import br.com.oma.omaonline.util.ReturnUltimoControlRatRN;
 import br.com.oma.sigadm.entidades.sgimpos;
+import br.com.oma.sip.auxiliar.ConstroiTributosCndPagarAUX;
+import br.com.oma.sip.dao.FinanceiroDao;
+import br.com.oma.sip.entidades.exclusao_lancamento;
+import br.com.oma.thread.bean.EnvioDeEmailsThread;
 
-@ManagedBean(name = "ged")
+@ManagedBean(name = "gednew")
 @ViewScoped
-public class GED extends Mensagens {
-
-	/**
-	 * 
-	 */
-	private static final long serialVersionUID = 4884066169786728271L;
+public class GED extends Mensagens implements Serializable {
+	private static final long serialVersionUID = 1L;
 
 	// DEPENDENCIA
 	@ManagedProperty(value = "#{SessaoMB}")
 	private SessaoMB sessaoMB;
 
-	// OBJETOS
-	private FinanceiroDAO fncDAO;
+	private FinanceiroDao fncDAO;
+	private GEDService service;
 	private CodigoBarras codigoBarrasUtil;
 	private ValidaCPFCNPJ validaCpfCnpj;
 	private consulta_financeiro pagar = new consulta_financeiro();
@@ -103,6 +111,8 @@ public class GED extends Mensagens {
 	private atbancos bancoSelecionado;
 	private cpfavor favorecidoSelecionado;
 	private intra_controle_contas_detalhamento iccd = new intra_controle_contas_detalhamento();
+	private intra_plano_contas planoContas;
+	private financeiro_imagem financeiroImagem = new financeiro_imagem();
 
 	// Atributos / Listas
 	private List<consulta_financeiro> listarGed, filtroGed, listarGedAprovados, filtroGedAprovados;
@@ -121,9 +131,11 @@ public class GED extends Mensagens {
 	private List<rateio> listaDeRateio;
 	private List<Integer> lstExcArquivo, lstNroLancto;
 	private List<sgimpos> listaDeTributos;
+	private List<intra_plano_contas> listaContasCNPJ2;
 
 	// Atributos
 	private int checkCPF;
+	private int voltarDepto = 0;
 
 	private Date filtroCndpagarContasInicial = new Date();
 	private Date filtroCndpagarContasFinal = new Date();
@@ -179,7 +191,7 @@ public class GED extends Mensagens {
 
 	// Pesquisa favorecido
 	private String nomeFavorecido;
-	private int codigoFavorecido;
+	private Integer codigoFavorecido;
 
 	// OBS Lançamento
 	private String obsLancto;
@@ -282,20 +294,58 @@ public class GED extends Mensagens {
 	private int opcaoFiltro;
 	private int opcaoLancto;
 	private int opcaoGerente;
+	private int qtdaVenctoGerenteRed;
+	private int qtdaVenctoGerenteYellow;
 
 	private String bloco;
 
 	private black_list blackListMB = new black_list();
 
 	private financeiro_imagem imagemDesfazer;
-	private int paginaCancelamento;
+	private Integer paginaCancelamento;
+
+	private int codigoFollowUp;
+	private String departamentoFollowUp;
+
 	private String ordemFusao = "ANTES";
-	private int pagina = 1;
+	private Integer paginaFusao;
+
+	private String buscaImagem;
+
+	@PostConstruct
+	public void init() {
+		try {
+			FacesContext ctx = FacesContext.getCurrentInstance();
+			Map<String, String> params = ctx.getExternalContext().getRequestParameterMap();
+			String opcao = params.get("opcaoGerente");
+			if (opcao != null) {
+				this.opcaoGerente = Integer.valueOf(opcao);
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
 
 	// GET x SET
 
+	public String getBuscaImagem() {
+		return buscaImagem;
+	}
+
+	public void setBuscaImagem(String buscaImagem) {
+		this.buscaImagem = buscaImagem;
+	}
+
 	public int getOpcaoFiltro() {
 		return opcaoFiltro;
+	}
+
+	public financeiro_imagem getFinanceiroImagem() {
+		return financeiroImagem;
+	}
+
+	public void setFinanceiroImagem(financeiro_imagem financeiroImagem) {
+		this.financeiroImagem = financeiroImagem;
 	}
 
 	public List<cndpagar> getFiltroCndpagarGerente() {
@@ -347,10 +397,14 @@ public class GED extends Mensagens {
 	}
 
 	public int getCheckCPF() {
-		if (this.cndpagar != null) {
-			if (this.cndpagar.getCnpj() > 0 & this.checkCPF == 0) {
-				this.validaCPFIcon();
+		try {
+			if (this.cndpagar != null) {
+				if (this.cndpagar.getCnpj() > 0 & this.checkCPF == 0) {
+					this.validaCPFIcon();
+				}
 			}
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 		return checkCPF;
 	}
@@ -375,12 +429,28 @@ public class GED extends Mensagens {
 		this.imagemDesfazer = imagemDesfazer;
 	}
 
-	public int getPaginaCancelamento() {
+	public Integer getPaginaCancelamento() {
 		return paginaCancelamento;
 	}
 
-	public void setPaginaCancelamento(int paginaCancelamento) {
+	public void setPaginaCancelamento(Integer paginaCancelamento) {
 		this.paginaCancelamento = paginaCancelamento;
+	}
+
+	public int getCodigoFollowUp() {
+		return codigoFollowUp;
+	}
+
+	public void setCodigoFollowUp(int codigoFollowUp) {
+		this.codigoFollowUp = codigoFollowUp;
+	}
+
+	public String getDepartamentoFollowUp() {
+		return departamentoFollowUp;
+	}
+
+	public void setDepartamentoFollowUp(String departamentoFollowUp) {
+		this.departamentoFollowUp = departamentoFollowUp;
 	}
 
 	public String getOrdemFusao() {
@@ -391,29 +461,32 @@ public class GED extends Mensagens {
 		this.ordemFusao = ordemFusao;
 	}
 
-	public int getPagina() {
-		return pagina;
+	public Integer getPaginaFusao() {
+		return paginaFusao;
 	}
 
-	public void setPagina(int pagina) {
-		this.pagina = pagina;
+	public void setPaginaFusao(Integer paginaFusao) {
+		this.paginaFusao = paginaFusao;
 	}
 
-	public int getCodigoFavorecido() {
+	public Integer getCodigoFavorecido() {
 		return codigoFavorecido;
 	}
 
-	public void setCodigoFavorecido(int codigoFavorecido) {
+	public void setCodigoFavorecido(Integer codigoFavorecido) {
 		this.codigoFavorecido = codigoFavorecido;
 	}
 
 	public int getOpcaoLancto() {
-		FacesContext ctx = FacesContext.getCurrentInstance();
-		Map<String, String> params = ctx.getExternalContext().getRequestParameterMap();
-
-		String opcao = params.get("opcaoLancto");
-		if (opcao != null) {
-			this.opcaoLancto = Integer.valueOf(opcao);
+		try {
+			FacesContext ctx = FacesContext.getCurrentInstance();
+			Map<String, String> params = ctx.getExternalContext().getRequestParameterMap();
+			String opcao = params.get("opcaoLancto");
+			if (opcao != null) {
+				this.opcaoLancto = Integer.valueOf(opcao);
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 		return opcaoLancto;
 	}
@@ -423,13 +496,6 @@ public class GED extends Mensagens {
 	}
 
 	public int getOpcaoGerente() {
-		FacesContext ctx = FacesContext.getCurrentInstance();
-		Map<String, String> params = ctx.getExternalContext().getRequestParameterMap();
-
-		String opcao = params.get("opcaoGerente");
-		if (opcao != null) {
-			this.opcaoGerente = Integer.valueOf(opcao);
-		}
 		return opcaoGerente;
 	}
 
@@ -462,31 +528,36 @@ public class GED extends Mensagens {
 	}
 
 	public List<consulta_financeiro> getListarGed() {
-		if (!this.sessaoMB.getUsuario().getGrupoGer().isEmpty()) {
-			if (this.sessaoMB.getUsuario().getGrupoGer().get(0).getNome().equals(" Todos")) {
-				this.listarGed = null;
-				this.filtroDePagar = null;
-				if (this.listarGed == null) {
-					this.fncDAO = new FinanceiroDAO();
-					this.listarGed = this.fncDAO.listarGED();
-				}
-				return this.listarGed;
-			} else {
-				this.listarGed = null;
-				this.filtroDePagar = null;
-				if (!this.sessaoMB.getUsuario().getGrupoGer().isEmpty()) {
+		try {
+			if (!this.sessaoMB.getUsuario().getGrupoGer().isEmpty()) {
+				if (this.sessaoMB.getUsuario().getGrupoGer().get(0).getNome().equals(" Todos")) {
+					this.listarGed = null;
+					this.filtroDePagar = null;
 					if (this.listarGed == null) {
-						this.fncDAO = new FinanceiroDAO();
-						this.listarGed = this.fncDAO.listarGED(this.gerente);
+						this.fncDAO = new FinanceiroDao();
+						this.listarGed = this.fncDAO.listarGED();
 					}
 					return this.listarGed;
 				} else {
-					return null;
+					this.listarGed = null;
+					this.filtroDePagar = null;
+					if (!this.sessaoMB.getUsuario().getGrupoGer().isEmpty()) {
+						if (this.listarGed == null) {
+							this.fncDAO = new FinanceiroDao();
+							this.listarGed = this.fncDAO.listarGED(this.gerente);
+						}
+						return this.listarGed;
+					} else {
+						return null;
+					}
 				}
+			} else {
+				return null;
 			}
-		} else {
-			return null;
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
+		return null;
 	}
 
 	public void setListarGed(List<consulta_financeiro> listarGed) {
@@ -494,31 +565,36 @@ public class GED extends Mensagens {
 	}
 
 	public List<consulta_financeiro> getListarGedAprovados() {
-		if (!this.sessaoMB.getUsuario().getGrupoGer().isEmpty()) {
-			if (this.sessaoMB.getUsuario().getGrupoGer().get(0).getNome().equals(" Todos")) {
-				this.listarGedAprovados = null;
-				this.filtroDePagar = null;
-				if (this.listarGedAprovados == null) {
-					this.fncDAO = new FinanceiroDAO();
-					this.listarGedAprovados = this.fncDAO.listarGEDAprovados();
-				}
-				return this.listarGedAprovados;
-			} else {
-				this.listarGedAprovados = null;
-				this.filtroDePagar = null;
-				if (!this.sessaoMB.getUsuario().getGrupoGer().isEmpty()) {
+		try {
+			if (!this.sessaoMB.getUsuario().getGrupoGer().isEmpty()) {
+				if (this.sessaoMB.getUsuario().getGrupoGer().get(0).getNome().equals(" Todos")) {
+					this.listarGedAprovados = null;
+					this.filtroDePagar = null;
 					if (this.listarGedAprovados == null) {
-						this.fncDAO = new FinanceiroDAO();
-						this.listarGedAprovados = this.fncDAO.listarGEDAprovados(this.gerente);
+						this.fncDAO = new FinanceiroDao();
+						this.listarGedAprovados = this.fncDAO.listarGEDAprovados();
 					}
 					return this.listarGedAprovados;
 				} else {
-					return null;
+					this.listarGedAprovados = null;
+					this.filtroDePagar = null;
+					if (!this.sessaoMB.getUsuario().getGrupoGer().isEmpty()) {
+						if (this.listarGedAprovados == null) {
+							this.fncDAO = new FinanceiroDao();
+							this.listarGedAprovados = this.fncDAO.listarGEDAprovados(this.gerente);
+						}
+						return this.listarGedAprovados;
+					} else {
+						return null;
+					}
 				}
+			} else {
+				return null;
 			}
-		} else {
-			return null;
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
+		return null;
 	}
 
 	public void setListarGedAprovados(List<consulta_financeiro> listarGedAprovados) {
@@ -870,12 +946,16 @@ public class GED extends Mensagens {
 	}
 
 	public String[] getAcoes() {
-		acoes = new String[5];
-		acoes[0] = "Adicionado";
-		acoes[1] = "Alterado";
-		acoes[2] = "Excluído";
-		acoes[3] = "Aprovado";
-		acoes[4] = "Protocolo Recebido";
+		try {
+			acoes = new String[5];
+			acoes[0] = "Adicionado";
+			acoes[1] = "Alterado";
+			acoes[2] = "Excluído";
+			acoes[3] = "Aprovado";
+			acoes[4] = "Protocolo Recebido";
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
 		return acoes;
 	}
 
@@ -924,8 +1004,12 @@ public class GED extends Mensagens {
 	}
 
 	public List<intra_grupo_gerente> getListaDeGerentes() {
-		if (this.listaDeGerentes == null) {
-			this.listaDeGerentes = this.retornaGerentes();
+		try {
+			if (this.listaDeGerentes == null) {
+				this.listaDeGerentes = this.retornaGerentes();
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 		return listaDeGerentes;
 	}
@@ -943,15 +1027,51 @@ public class GED extends Mensagens {
 	}
 
 	public List<intra_condominios> getListaDeCondominio() {
-		if (this.gerenteMB.getCodigo() > 0) {
-			this.fncDAO = new FinanceiroDAO();
-			this.listaDeCondominio = this.fncDAO.listarCondominios(this.gerente);
+		try {
+			if (this.gerenteMB.getCodigo() > 0) {
+				this.fncDAO = new FinanceiroDao();
+				this.listaDeCondominio = this.fncDAO.listarCondominios(this.gerente);
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 		return listaDeCondominio;
 	}
 
 	public void setListaDeCondominio(List<intra_condominios> listaDeCondominio) {
 		this.listaDeCondominio = listaDeCondominio;
+	}
+
+	public List<intra_plano_contas> getListaContasCNPJ2() {
+		try {
+			ControleContasNovoDAO ccnDAO = new ControleContasNovoDAO();
+			if (this.cndpagar.getCondominio() > 0) {
+				this.listaContasCNPJ2 = ccnDAO.listarContasCNPJ2(this.cndpagar.getCondominio(), this.fornecedor);
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return listaContasCNPJ2;
+	}
+
+	public void setListaContasCNPJ2(List<intra_plano_contas> listaContasCNPJ2) {
+		this.listaContasCNPJ2 = listaContasCNPJ2;
+	}
+
+	public intra_controle_contas_detalhamento getIccd() {
+		return iccd;
+	}
+
+	public void setIccd(intra_controle_contas_detalhamento iccd) {
+		this.iccd = iccd;
+	}
+
+	public intra_plano_contas getPlanoContas() {
+		return planoContas;
+	}
+
+	public void setPlanoContas(intra_plano_contas planoContas) {
+		this.planoContas = planoContas;
 	}
 
 	public String getNomeCondo() {
@@ -1387,8 +1507,12 @@ public class GED extends Mensagens {
 	}
 
 	public intra_grupo_gerente getGerenteBEAN() {
-		if (this.listaDeGerentes == null) {
-			this.listaDeGerentes = this.retornaGerentes();
+		try {
+			if (this.listaDeGerentes == null) {
+				this.listaDeGerentes = this.retornaGerentes();
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 		return gerenteBEAN;
 	}
@@ -1630,31 +1754,36 @@ public class GED extends Mensagens {
 	}
 
 	public List<cndpagar> getListaAprovadosPagar() {
-		if (!this.sessaoMB.getUsuario().getGrupoGer().isEmpty()) {
-			if (this.sessaoMB.getUsuario().getGrupoGer().get(0).getNome().equals(" Todos")) {
-				this.listaAprovadosPagar = null;
-				this.filtroAprovadosPagar = null;
-				if (this.listaAprovadosPagar == null) {
-					this.fncDAO = new FinanceiroDAO();
-					this.listaAprovadosPagar = this.fncDAO.listarAprovados();
-				}
-				return listaAprovadosPagar;
-			} else {
-				this.listaAprovadosPagar = null;
-				this.filtroAprovadosPagar = null;
-				if (!this.sessaoMB.getUsuario().getGrupoGer().isEmpty()) {
+		try {
+			if (!this.sessaoMB.getUsuario().getGrupoGer().isEmpty()) {
+				if (this.sessaoMB.getUsuario().getGrupoGer().get(0).getNome().equals(" Todos")) {
+					this.listaAprovadosPagar = null;
+					this.filtroAprovadosPagar = null;
 					if (this.listaAprovadosPagar == null) {
-						this.fncDAO = new FinanceiroDAO();
-						this.listaAprovadosPagar = this.fncDAO.listarAprovados(this.gerente);
+						this.fncDAO = new FinanceiroDao();
+						this.listaAprovadosPagar = this.fncDAO.listarAprovados();
 					}
 					return listaAprovadosPagar;
 				} else {
-					return null;
+					this.listaAprovadosPagar = null;
+					this.filtroAprovadosPagar = null;
+					if (!this.sessaoMB.getUsuario().getGrupoGer().isEmpty()) {
+						if (this.listaAprovadosPagar == null) {
+							this.fncDAO = new FinanceiroDao();
+							this.listaAprovadosPagar = this.fncDAO.listarAprovados(this.gerente);
+						}
+						return listaAprovadosPagar;
+					} else {
+						return null;
+					}
 				}
+			} else {
+				return null;
 			}
-		} else {
-			return null;
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
+		return null;
 	}
 
 	public void setListaAprovadosPagar(List<cndpagar> listaAprovadosPagar) {
@@ -1670,11 +1799,15 @@ public class GED extends Mensagens {
 	}
 
 	public List<cndpagar> getListarCndpagarContas() {
-		if (this.listarCndpagarContas == null) {
-			this.fncDAO = new FinanceiroDAO();
-			this.listarCndpagarContas = this.fncDAO.getListaLancamentoContas(this.opcaoLancto,
-					this.sessaoMB.getUsuario().getEmail(), this.filtroCndpagarContasInicial,
-					this.filtroCndpagarContasFinal);
+		try {
+			if (this.listarCndpagarContas == null) {
+				this.fncDAO = new FinanceiroDao();
+				this.listarCndpagarContas = this.fncDAO.getListaLancamentoContas(this.opcaoLancto,
+						this.sessaoMB.getUsuario().getEmail(), this.filtroCndpagarContasInicial,
+						this.filtroCndpagarContasFinal);
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 		return listarCndpagarContas;
 	}
@@ -1684,17 +1817,25 @@ public class GED extends Mensagens {
 	}
 
 	public List<cndpagar> getListarCndpagarGerente() {
-		if (this.listarCndpagarGerente == null) {
-			this.listarCndpagarGerente = new ArrayList<>();
-			this.fncDAO = new FinanceiroDAO();
-			this.listarCndpagarGerente = this.fncDAO.getListaLancamentoGerente(this.opcaoGerente,
-					this.sessaoMB.getGerenteSelecionado().getCodigo(), this.filtroCndpagarGerInicial,
-					this.filtroCndpagarGerFinal);
-			List<Integer> listaCnd = new ArrayList<>();
-			for (intra_condominios aux : this.sessaoMB.getListaCondominios()) {
-				listaCnd.add(aux.getCodigo());
+		try {
+			if (this.listarCndpagarGerente == null) {
+				this.listarCndpagarGerente = new ArrayList<>();
+				this.fncDAO = new FinanceiroDao();
+				if (this.sessaoMB != null && this.sessaoMB.getGerenteSelecionado() != null
+						&& this.filtroCndpagarGerInicial != null && this.filtroCndpagarGerFinal != null) {
+					this.listarCndpagarGerente = this.fncDAO.getListaLancamentoGerente(this.opcaoGerente,
+							this.sessaoMB.getGerenteSelecionado().getCodigo(), this.filtroCndpagarGerInicial,
+							this.filtroCndpagarGerFinal);
+				}
+				List<Integer> listaCnd = new ArrayList<>();
+				if (this.sessaoMB != null && this.sessaoMB.getListaCondominios() != null) {
+					for (intra_condominios aux : this.sessaoMB.getListaCondominios()) {
+						listaCnd.add(aux.getCodigo());
+					}
+				}
 			}
-			// this.listarCndpagarGerente.addAll(this.fncDAO.pesquisaDA(listaCnd));
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 		return listarCndpagarGerente;
 	}
@@ -1777,7 +1918,7 @@ public class GED extends Mensagens {
 
 	public List<cndpagar> getListaAlteracaoContas() {
 		if (this.listaAlteracaoContas == null) {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			this.dataInicio = new DateTime().plusDays(1).withMillisOfDay(0).toDate();
 			this.dataFim = new DateTime().plusDays(1).withMillisOfDay(0).toDate();
 			this.listaAlteracaoContas = this.fncDAO.getListaAlteracaoContas(this.dataInicio, this.dataFim,
@@ -1804,6 +1945,30 @@ public class GED extends Mensagens {
 
 	public void setListaDeDuplicidade(List<cndpagar> listaDeDuplicidade) {
 		this.listaDeDuplicidade = listaDeDuplicidade;
+	}
+
+	public int getVoltarDepto() {
+		return voltarDepto;
+	}
+
+	public void setVoltarDepto(int voltarDepto) {
+		this.voltarDepto = voltarDepto;
+	}
+
+	public int getQtdaVenctoGerenteRed() {
+		return qtdaVenctoGerenteRed;
+	}
+
+	public int getQtdaVenctoGerenteYellow() {
+		return qtdaVenctoGerenteYellow;
+	}
+
+	public void setQtdaVenctoGerenteRed(int qtdaVenctoGerenteRed) {
+		this.qtdaVenctoGerenteRed = qtdaVenctoGerenteRed;
+	}
+
+	public void setQtdaVenctoGerenteYellow(int qtdaVenctoGerenteYellow) {
+		this.qtdaVenctoGerenteYellow = qtdaVenctoGerenteYellow;
 	}
 
 	// METODOS
@@ -1846,7 +2011,7 @@ public class GED extends Mensagens {
 		this.listaDePagar = null;
 		this.nomeCondominio = "";
 		this.condominio = condominio;
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (this.sessaoMB.getUsuario().getGrupoDepto().get(0).getNome().equals("Contas a Pagar")) {
 			this.listaDePagar = this.fncDAO.listarCndPagarContas(condominio);
 		} else {
@@ -1859,14 +2024,14 @@ public class GED extends Mensagens {
 		this.listaDePagar = null;
 		this.nomeCondominio = "";
 		this.condominio = condominio;
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		this.listaDePagar = this.fncDAO.listarCndPagarAprovados(condominio);
 		this.nomeCondominio = this.fncDAO.listarNomeCondominio(condominio);
 	}
 
 	public void abrirLancamento(cndpagar cndpagar) {
 		this.valorBruto = 0.0;
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		this.cndpagar = this.fncDAO.pesqLancto(cndpagar.getCodigo());
 		this.gridTblLancamentos = false;
 		this.gridDetalhesLancamento = true;
@@ -1881,7 +2046,7 @@ public class GED extends Mensagens {
 
 		if (this.cndpagar.getRateado().equals("S")) {
 			this.listaDeCodReduzido = new ArrayList<>();
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			List<cndpagar> lst = this.fncDAO.listarContasRateadas(this.cndpagar.getCodigoRateio());
 			DecimalFormat df = new DecimalFormat("#,##0.00", new DecimalFormatSymbols(new Locale("pt", "BR")));
 			for (cndpagar aux : lst) {
@@ -1900,7 +2065,7 @@ public class GED extends Mensagens {
 	}
 
 	public void nomePlanoContas(cndpagar pg) {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		this.cndplanoNome = this.fncDAO.listarPlano(pg.getConta(), pg.getCondominio());
 		nomeDoPlanoContas = cndplanoNome.getCod_reduzido() + " - " + cndplanoNome.getNome();
 	}
@@ -2118,7 +2283,7 @@ public class GED extends Mensagens {
 	}
 
 	public void abrirFollowUp() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		this.lstFollowUp = this.fncDAO.listarFollowUp(this.cndpagar.getCodigo());
 		if (this.lstFollowUp.isEmpty()) {
 			FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
@@ -2130,8 +2295,19 @@ public class GED extends Mensagens {
 
 	public void abrirFollowUp(cndpagar p) {
 		this.cndpagar = p;
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		this.lstFollowUp = this.fncDAO.listarFollowUp(this.cndpagar.getCodigo());
+		if (this.lstFollowUp.isEmpty()) {
+			FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
+					"Não há nenhum Follow Up para este lançamento!", "Não há nenhum Follow Up para este lançamento!"));
+		} else {
+			RequestContext.getCurrentInstance().execute("PF('dlgFollowUp').show();");
+		}
+	}
+
+	public void followUpExclusaoLancto(int p) {
+		this.fncDAO = new FinanceiroDao();
+		this.lstFollowUp = this.fncDAO.listarFollowUp(p);
 		if (this.lstFollowUp.isEmpty()) {
 			FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
 					"Não há nenhum Follow Up para este lançamento!", "Não há nenhum Follow Up para este lançamento!"));
@@ -2151,7 +2327,7 @@ public class GED extends Mensagens {
 	}
 
 	public void reprovarLancamento() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		this.cndpagar.setUsuarioAprovacao(null);
 		if (this.cndpagar != null && this.cndpagar.getCodigo() > 0) {
 			if (this.cndpagar.getMotivoReprovacao() == null || this.cndpagar.getMotivoReprovacao().equals("")) {
@@ -2206,7 +2382,7 @@ public class GED extends Mensagens {
 	}
 
 	public void excluirLancamento() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (this.cndpagar != null && this.cndpagar.getCodigo() > 0) {
 			List<cndpagar_aprovacao> listaAprovadores = null;
 
@@ -2239,7 +2415,7 @@ public class GED extends Mensagens {
 
 	public boolean autorizaAprovacaoSiga() throws RNException {
 		boolean autorizado = false;
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (this.cndpagar != null) {
 			this.condoParam = this.fncDAO.condominioParam(Short.valueOf(cndpagar.getCondominio()));
 			if (this.condoParam != null && this.condoParam.isAprovacaoLancamentos()) {
@@ -2278,7 +2454,7 @@ public class GED extends Mensagens {
 
 	public boolean autorizaPreAprovacao() throws RNException {
 		boolean autorizado = true;
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (this.cndpagar != null) {
 			intra_grupo_permissao igp = new intra_grupo_permissao();
 			for (intra_grupo_permissao p : this.sessaoMB.getUsuario().getGrupoPer()) {
@@ -2312,7 +2488,7 @@ public class GED extends Mensagens {
 	}
 
 	public void addLanctoSigaRateio() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		String val = "";
 		cndpagar cdp = new cndpagar();
 		List<cndpagar> lista = this.fncDAO.listaDeCndpagarRateado(this.cndpagar);
@@ -2362,7 +2538,7 @@ public class GED extends Mensagens {
 
 	public void adicionarLancamentoSiga() {
 		try {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			FinanceiroSIPDAO sipDAO = new FinanceiroSIPDAO();
 
 			if (this.obsLancto != null && !this.obsLancto.isEmpty()) {
@@ -2463,7 +2639,7 @@ public class GED extends Mensagens {
 					this.cndpagar.setStatus("P");
 				}
 
-				this.fncDAO = new FinanceiroDAO();
+				this.fncDAO = new FinanceiroDao();
 				cndpagar_aprovacao aprovacao = new cndpagar_aprovacao();
 				aprovacao.setData(new Date());
 				aprovacao.setAprovador(this.sessaoMB.getUsuario().getEmail());
@@ -2518,7 +2694,7 @@ public class GED extends Mensagens {
 			}
 			if (!jaAprovou) {
 
-				this.fncDAO = new FinanceiroDAO();
+				this.fncDAO = new FinanceiroDao();
 				List<cndpagar> lista = this.fncDAO.listaDeCndpagarRateado(this.cndpagar);
 				cndpagar_aprovacao aprovacao = new cndpagar_aprovacao();
 				aprovacao.setData(new Date());
@@ -2695,7 +2871,7 @@ public class GED extends Mensagens {
 	}
 
 	public void pesquisaContaRatCod1() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (!this.codRed1.trim().isEmpty()) {
 			this.lstConta = this.fncDAO.listarPlanoConta(Integer.parseInt(this.codRed1),
 					Short.valueOf(String.valueOf(this.condominio)));
@@ -2714,7 +2890,7 @@ public class GED extends Mensagens {
 	}
 
 	public void pesquisaContaRatCod2() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (!this.codRed2.trim().isEmpty()) {
 			this.lstConta = this.fncDAO.listarPlanoConta(Integer.parseInt(this.codRed2),
 					Short.valueOf(String.valueOf(this.condominio)));
@@ -2733,7 +2909,7 @@ public class GED extends Mensagens {
 	}
 
 	public void pesquisaContaRatCod3() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (!this.codRed3.trim().isEmpty()) {
 			this.lstConta = this.fncDAO.listarPlanoConta(Integer.parseInt(this.codRed3),
 					Short.valueOf(String.valueOf(this.condominio)));
@@ -2752,7 +2928,7 @@ public class GED extends Mensagens {
 	}
 
 	public void pesquisaContaRatCod4() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (!this.codRed4.trim().isEmpty()) {
 			this.lstConta = this.fncDAO.listarPlanoConta(Integer.parseInt(this.codRed4),
 					Short.valueOf(String.valueOf(this.condominio)));
@@ -2771,7 +2947,7 @@ public class GED extends Mensagens {
 	}
 
 	public void pesquisaContaRatCod5() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (!this.codRed5.trim().isEmpty()) {
 			this.lstConta = this.fncDAO.listarPlanoConta(Integer.parseInt(this.codRed5),
 					Short.valueOf(String.valueOf(this.condominio)));
@@ -2790,7 +2966,7 @@ public class GED extends Mensagens {
 	}
 
 	public void pesquisaContaRatCod6() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (!this.codRed6.trim().isEmpty()) {
 			this.lstConta = this.fncDAO.listarPlanoConta(Integer.parseInt(this.codRed6),
 					Short.valueOf(String.valueOf(this.condominio)));
@@ -2809,7 +2985,7 @@ public class GED extends Mensagens {
 	}
 
 	public void pesquisaContaCod() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (this.contaContabil != null) {
 			this.lstConta = this.fncDAO.listarPlanoConta(Integer.parseInt(this.contaContabil),
 					Short.valueOf(String.valueOf(this.condominio)));
@@ -2824,13 +3000,18 @@ public class GED extends Mensagens {
 						String h2 = String.valueOf(this.contaContabil.charAt(this.contaContabil.length() - 3));
 						String h1 = String.valueOf(this.contaContabil.charAt(this.contaContabil.length() - 4));
 						this.codigoHistPadrao = h1 + h2 + h3 + h4;
-						this.listarHistPadrao();
+						if (this.tipoPagamento != null && !this.tipoPagamento.equals("E")) {
+							this.listarHistPadrao();
+						}
 					}
 				}
 			} else {
 				FacesContext.getCurrentInstance().addMessage(null,
 						new FacesMessage(FacesMessage.SEVERITY_WARN, "Conta não encontrada!", "Conta não encontrada!"));
-				this.nomeConta = "";
+				if (this.contaContabil.trim().equals("0"))
+					this.nomeConta = "";
+				else
+					this.nomeConta = "Conta não encontrada!";
 			}
 		} else {
 			this.nomeConta = "";
@@ -2895,10 +3076,17 @@ public class GED extends Mensagens {
 	}
 
 	public void pesquisaFornecedor() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (this.fornecedor != null) {
 			try {
-				this.fornecedorSelecionado = this.fncDAO.listarFornecedor(Double.parseDouble(this.fornecedor));
+
+				double inscricao = Double.parseDouble(this.fornecedor);
+
+				if (inscricao == 0) {
+					this.fornecedorSelecionado = this.fncDAO.pesquisaFornecedorUsualcred(".");
+				} else {
+					this.fornecedorSelecionado = this.fncDAO.listarFornecedor(Double.parseDouble(this.fornecedor));
+				}
 				if (this.fornecedorSelecionado != null && !this.fornecedorSelecionado.getNome().isEmpty()) {
 					this.nomeFornecedor = this.fornecedorSelecionado.getNome();
 				} else {
@@ -2907,6 +3095,8 @@ public class GED extends Mensagens {
 					this.fornecedorSelecionado = null;
 				}
 			} catch (NumberFormatException e) {
+				this.fornecedorSelecionado = null;
+				this.nomeFornecedor = "";
 				FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
 						"Este campo só aceita números", "ste campo só aceita números"));
 			}
@@ -2943,8 +3133,8 @@ public class GED extends Mensagens {
 	}
 
 	public void pesquisarBanco() {
-		if (this.codBanco != null) {
-			this.fncDAO = new FinanceiroDAO();
+		if (this.codBanco != null && NumberUtils.isNumber(this.codBanco)) {
+			this.fncDAO = new FinanceiroDao();
 			int valor = Integer.valueOf(this.codBanco);
 			this.bancoSelecionado = this.fncDAO.pesquisarBanco(valor);
 			if (this.bancoSelecionado == null) {
@@ -2964,7 +3154,7 @@ public class GED extends Mensagens {
 			FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
 					"Insira o nome da conta para pesquisar!", "Insira o nome da conta para pesquisar!"));
 		} else {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			if (this.hideSalvar == 1 || this.hideSalvar == 2) {
 				this.condominio = this.cndpagar.getCondominio();
 			}
@@ -2997,7 +3187,7 @@ public class GED extends Mensagens {
 	}
 
 	public void listarFornecedoresCNPJ() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (this.fornecedor != null && !this.fornecedor.equals("")) {
 			this.lstFornecedor = this.fncDAO.listarFornecedoresCNPJ(this.fornecedor);
 			if (this.lstFornecedor.size() == 0) {
@@ -3024,7 +3214,7 @@ public class GED extends Mensagens {
 	public void pesquisaImagem() {
 		this.validaEtiqueta = false;
 		if (this.idImagem != null && !this.idImagem.isEmpty() && Double.parseDouble(this.idImagem) > 0) {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 
 			BigDecimal bd = new BigDecimal(this.idImagem);
 
@@ -3063,7 +3253,7 @@ public class GED extends Mensagens {
 	}
 
 	public void adicionarArquivo() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (this.validaEtiqueta) {
 			if (this.listaArquivos == null) {
 				this.listaArquivos = new ArrayList<>();
@@ -3146,6 +3336,25 @@ public class GED extends Mensagens {
 	public void visualizarImagem(int index) throws FileNotFoundException {
 		this.cdImagem = (int) this.listaArquivos.get(index).getId();
 		this.imagemSelecionada = this.listaArquivos.get(index);
+	}
+
+	public void visualizarImagemPorCodigo(int index) throws FileNotFoundException {
+		this.cdImagem = (int) this.listaArquivos.get(index).getId();
+		this.imagemSelecionada = this.listaArquivos.get(index);
+
+	}
+
+	public void visualizarImagemByte(financeiro_imagem img) {
+		BigDecimal etiqueta = new BigDecimal(img.getId());
+		this.buscaImagem = etiqueta + "." + img.getNome_arquivo();
+		this.imagemSelecionada = img;
+		this.financeiroImagem = img;
+	}
+
+	public void visualizarImagem(financeiro_imagem img) throws FileNotFoundException {
+		BigDecimal etiqueta = new BigDecimal(img.getId());
+		this.imagemSelecionada = img;
+		this.buscaImagem = etiqueta + "." + img.getNome_arquivo();
 	}
 
 	public void validaGrid2() {
@@ -3403,7 +3612,7 @@ public class GED extends Mensagens {
 	}
 
 	public void pesquisaFavorecido() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 
 		this.lstFavorecido = this.fncDAO.listarFavorecido(this.nomeFavorecido, this.codigoFavorecido);
 
@@ -3438,7 +3647,7 @@ public class GED extends Mensagens {
 
 	public void listarBancosPorNome() {
 		if (this.nomeDoBanco != null) {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			this.lstBancos = this.fncDAO.listarBancosPorNome(this.nomeDoBanco);
 			if (this.lstBancos == null || this.lstBancos.size() == 0) {
 				FacesContext.getCurrentInstance().addMessage(null,
@@ -3459,56 +3668,60 @@ public class GED extends Mensagens {
 	}
 
 	public void validaLancamento() throws ParseException {
-		this.fncDAO = new FinanceiroDAO();
-		this.constroiCndpagar();
-		cndpagar c1 = new cndpagar();
-		if (this.validaCPF()) {
-			if (!this.cndpagar.getCodigoBarra().trim().isEmpty()) {
-				c1 = this.fncDAO.pesqDupliVCCB(this.cndpagar);
-				if (c1 != null) {
-					if (c1.getCodigo() != 0) {
-						this.valCodLacto = c1.getCodigo();
-						this.valDatVenc = c1.getVencimento();
-						if (!c1.getCodigoBarra().trim().isEmpty()) {
-							this.valCodBarras = c1.getCodigoBarra();
+		try {
+			this.fncDAO = new FinanceiroDao();
+			this.constroiCndpagar();
+			cndpagar c1 = new cndpagar();
+			if (this.validaCPF()) {
+				if (!this.cndpagar.getCodigoBarra().trim().isEmpty()) {
+					c1 = this.fncDAO.pesqDupliVCCB(this.cndpagar);
+					if (c1 != null) {
+						if (c1.getCodigo() != 0) {
+							this.valCodLacto = c1.getCodigo();
+							this.valDatVenc = c1.getVencimento();
+							if (!c1.getCodigoBarra().trim().isEmpty()) {
+								this.valCodBarras = c1.getCodigoBarra();
+							}
+							this.valValida = true;
+							RequestContext.getCurrentInstance().update("frmValidalancamento");
+							RequestContext.getCurrentInstance().execute("PF('dlgValLancto').show();");
 						}
-						this.valValida = true;
-						RequestContext.getCurrentInstance().update("frmValidalancamento");
-						RequestContext.getCurrentInstance().execute("PF('dlgValLancto').show();");
+					} else {
+						this.adicionarLancamentoOma();
+						FacesContext.getCurrentInstance().addMessage(null,
+								new FacesMessage("Adicionado com sucesso!", "Adicionado com sucesso!"));
 					}
 				} else {
-					this.adicionarLancamentoOma();
-					FacesContext.getCurrentInstance().addMessage(null,
-							new FacesMessage("Adicionado com sucesso!", "Adicionado com sucesso!"));
-				}
-			} else {
-				this.valor = this.valor.replace("R$ ", "");
-				DecimalFormat df = new DecimalFormat("#,##0.00", new DecimalFormatSymbols(new Locale("pt", "BR")));
-				double valor2 = df.parse(this.valor).doubleValue();
-				c1 = this.fncDAO.pesqDupliVCAGCCVL(this.cndpagar, valor2);
-				if (c1 != null) {
-					if (c1.getCodigo() != 0) {
-						this.valCodLacto = c1.getCodigo();
-						this.valDatVenc = c1.getVencimento();
-						this.valValor = c1.getValor();
-						this.valCodAg = String.valueOf(c1.getAgencDestino());
-						this.valCC = c1.getContaDestino();
-						this.valValida = false;
-						RequestContext.getCurrentInstance().update("frmValidalancamento");
-						RequestContext.getCurrentInstance().execute("PF('dlgValLancto').show();");
+					this.valor = this.valor.replace("R$ ", "");
+					DecimalFormat df = new DecimalFormat("#,##0.00", new DecimalFormatSymbols(new Locale("pt", "BR")));
+					double valor2 = df.parse(this.valor).doubleValue();
+					c1 = this.fncDAO.pesqDupliVCAGCCVL(this.cndpagar, valor2);
+					if (c1 != null) {
+						if (c1.getCodigo() != 0) {
+							this.valCodLacto = c1.getCodigo();
+							this.valDatVenc = c1.getVencimento();
+							this.valValor = c1.getValor();
+							this.valCodAg = String.valueOf(c1.getAgencDestino());
+							this.valCC = c1.getContaDestino();
+							this.valValida = false;
+							RequestContext.getCurrentInstance().update("frmValidalancamento");
+							RequestContext.getCurrentInstance().execute("PF('dlgValLancto').show();");
+						}
+					} else {
+						this.adicionarLancamentoOma();
+						FacesContext.getCurrentInstance().addMessage(null,
+								new FacesMessage("Adicionado com sucesso!", "Adicionado com sucesso!"));
 					}
-				} else {
-					this.adicionarLancamentoOma();
-					FacesContext.getCurrentInstance().addMessage(null,
-							new FacesMessage("Adicionado com sucesso!", "Adicionado com sucesso!"));
 				}
 			}
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 	}
 
-	public void constroiCndpagar() {
+	public void constroiCndpagar() throws IntranetException {
 		this.cndpagar.setUsuarioAprovacao(null);
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (this.cndpagar.getCodigo() == 0 && !this.alteracao) {
 			this.cndpagar.setCondominio(Short.valueOf(String.valueOf(this.condominio)));
 			this.cndpagar.setAdicionadoPor(this.sessaoMB.getUsuario().getEmail());
@@ -3636,7 +3849,9 @@ public class GED extends Mensagens {
 		}
 
 		historico = strBuilder.toString();
-		this.cndpagar.setHistorico(historico);
+		if (this.cndpagar.getTipoPagto() != null) {
+			this.cndpagar.setHistorico(historico);
+		}
 
 		if (this.hideSalvar == 1 || this.hideSalvar == 2) {
 			if (this.codigoHistPadrao != null) {
@@ -3664,7 +3879,7 @@ public class GED extends Mensagens {
 		}
 
 		if (this.tipoPagamento != null) {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 
 			if (this.tipoPagamento.equals("5")) {
 				this.cndpagar.setFavorecido(this.nomeFavorecido);
@@ -3713,8 +3928,6 @@ public class GED extends Mensagens {
 				this.cndpagar.setEstimado("R");
 				if (this.favorecidoSelecionado != null && this.favorecidoSelecionado.getCodigo() != 0) {
 					this.cndpagar.setCodigoFav(this.favorecidoSelecionado.getCodigo());
-				} else {
-					System.out.println("erro favorecido");
 				}
 
 			} else if (this.tipoPagamento.equals("7")) {
@@ -3774,11 +3987,15 @@ public class GED extends Mensagens {
 				this.cndpagar.setEstimado("R");
 				if (this.favorecidoSelecionado != null && this.favorecidoSelecionado.getCodigo() != 0) {
 					this.cndpagar.setCodigoFav(this.favorecidoSelecionado.getCodigo());
-				} else {
-					System.out.println("erro favorecido");
 				}
 
 			} else if (this.tipoPagamento.equals("8")) {
+
+				if (this.codigoBarras == null || this.codigoBarras.trim().isEmpty()
+						|| this.codigoBarras.trim().length() != 44) {
+					throw new IntranetException("Codigo de barras incorreto!");
+				}
+
 				short cod = Short.valueOf(String.valueOf(this.codigoBarras.subSequence(0, 3)));
 
 				if (this.hideSalvar == 1 || this.hideSalvar == 2) {
@@ -3822,6 +4039,12 @@ public class GED extends Mensagens {
 				}
 
 			} else if (this.tipoPagamento.equals("E")) {
+
+				if (this.codigoBarras == null || this.codigoBarras.trim().isEmpty()
+						|| this.codigoBarras.trim().length() != 44) {
+					throw new IntranetException("Codigo de barras incorreto!");
+				}
+
 				short codConta = 0;
 				if (this.hideSalvar == 1 || this.hideSalvar == 2) {
 					codConta = this.fncDAO.listContCondo(Short.valueOf(String.valueOf(this.cndpagar.getCondominio())));
@@ -3860,7 +4083,6 @@ public class GED extends Mensagens {
 				}
 			}
 		}
-
 		try {
 			this.salvarDetalhamento();
 		} catch (ParseException e) {
@@ -3870,7 +4092,7 @@ public class GED extends Mensagens {
 
 	public void adicionarLancamentoOma() {
 		this.cndpagar.setUsuarioAprovacao(null);
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		ReturnUltimoControlRatRN rur = new ReturnUltimoControlRatRN();
 
 		this.cndpagar.setCodigoRateio(rur.getCount());
@@ -3892,10 +4114,92 @@ public class GED extends Mensagens {
 	}
 
 	public String addLanctoOmaRateado() {
-		this.cndpagar.setUsuarioAprovacao(null);
 		String volta = null;
-		this.fncDAO = new FinanceiroDAO();
-		if (this.validaCPF()) {
+		try {
+			this.cndpagar.setUsuarioAprovacao(null);
+			this.fncDAO = new FinanceiroDao();
+			if (this.validaCPF()) {
+
+				this.constroiCndpagar();
+				/* this.constroiImagem(); */
+
+				List<rateio> lista = new ArrayList<rateio>();
+
+				for (int i = 1; i <= 6; i++) {
+					rateio x = new rateio();
+					for (rateio r : this.listaDeRateio) {
+						if (i == 1 & r.getValor1() != 0) {
+							x.setValor1(r.getValor1());
+							x.setContaReduzida1(r.getContaReduzida1());
+							x.setContaGradico1(r.getContaGradico1());
+							x.setComplemento1(this.complemento1);
+							x.setHistorico1(constroiHistoricoRateado(this.complemento1));
+						} else if (i == 2 & r.getValor2() != 0) {
+							x.setValor2(r.getValor2());
+							x.setContaReduzida2(r.getContaReduzida2());
+							x.setContaGradico2(r.getContaGradico2());
+							x.setComplemento2(this.complemento2);
+							x.setHistorico2(constroiHistoricoRateado(this.complemento2));
+						} else if (i == 3 & r.getValor3() != 0) {
+							x.setValor3(r.getValor3());
+							x.setContaReduzida3(r.getContaReduzida3());
+							x.setContaGradico3(r.getContaGradico3());
+							x.setComplemento3(this.complemento3);
+							x.setHistorico3(constroiHistoricoRateado(this.complemento3));
+						} else if (i == 4 & r.getValor4() != 0) {
+							x.setValor4(r.getValor4());
+							x.setContaReduzida4(r.getContaReduzida4());
+							x.setContaGradico4(r.getContaGradico4());
+							x.setComplemento4(this.complemento4);
+							x.setHistorico4(constroiHistoricoRateado(this.complemento4));
+						} else if (i == 5 & r.getValor5() != 0) {
+							x.setValor5(r.getValor5());
+							x.setContaReduzida5(r.getContaReduzida5());
+							x.setContaGradico5(r.getContaGradico5());
+							x.setComplemento5(this.complemento5);
+							x.setHistorico5(constroiHistoricoRateado(this.complemento5));
+						} else if (i == 6 & r.getValor6() != 0) {
+							x.setValor6(r.getValor6());
+							x.setContaReduzida6(r.getContaReduzida6());
+							x.setContaGradico6(r.getContaGradico6());
+							x.setComplemento6(this.complemento6);
+							x.setHistorico6(constroiHistoricoRateado(this.complemento6));
+						}
+					}
+					lista.add(x);
+				}
+
+				ReturnUltimoControlRatRN rur = new ReturnUltimoControlRatRN();
+
+				this.cndpagar.setCodigoRateio(rur.getCount());
+
+				this.cndpagar.setRateado(this.rateado);
+				boolean valida = false;
+				valida = this.fncDAO.adicionaLanctoOmaRateado(this.cndpagar, this.sessaoMB.getUsuario().getEmail(),
+						"oma", lista, this.listaArquivos);
+				if (valida) {
+
+					this.cndpagar = new cndpagar();
+					this.rat = new rateio();
+
+					this.msgAdicinado();
+					volta = "lanc-sucesso?faces-redirect=true;";
+
+					RequestContext.getCurrentInstance().execute("PF('dlgObsLancto2').hide();");
+				} else {
+					this.msgErro();
+				}
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return volta;
+	}
+
+	public String addLanctoOmaRateadoSIP() {
+		String volta = null;
+		try {
+			this.fncDAO = new FinanceiroDao();
 
 			this.constroiCndpagar();
 			/* this.constroiImagem(); */
@@ -3952,8 +4256,15 @@ public class GED extends Mensagens {
 
 			this.cndpagar.setRateado(this.rateado);
 			boolean valida = false;
-			valida = this.fncDAO.adicionaLanctoOmaRateado(this.cndpagar, this.sessaoMB.getUsuario().getEmail(), "oma",
-					lista, this.listaArquivos);
+
+			if (this.hideSalvar == 1) {
+				this.fncDAO.adicionaRateioSIP(this.cndpagar, this.sessaoMB, sessaoMB.getUsuario().getEmail(), lista,
+						this.listaArquivos);
+			} else {
+				valida = this.fncDAO.adicionaLanctoOmaRateado(this.cndpagar, this.sessaoMB.getUsuario().getEmail(),
+						"oma", lista, this.listaArquivos);
+			}
+
 			if (valida) {
 
 				this.cndpagar = new cndpagar();
@@ -3966,92 +4277,10 @@ public class GED extends Mensagens {
 			} else {
 				this.msgErro();
 			}
+
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
-
-		return volta;
-	}
-
-	public String addLanctoOmaRateadoSIP() {
-		String volta = null;
-		this.fncDAO = new FinanceiroDAO();
-
-		this.constroiCndpagar();
-		/* this.constroiImagem(); */
-
-		List<rateio> lista = new ArrayList<rateio>();
-
-		for (int i = 1; i <= 6; i++) {
-			rateio x = new rateio();
-			for (rateio r : this.listaDeRateio) {
-				if (i == 1 & r.getValor1() != 0) {
-					x.setValor1(r.getValor1());
-					x.setContaReduzida1(r.getContaReduzida1());
-					x.setContaGradico1(r.getContaGradico1());
-					x.setComplemento1(this.complemento1);
-					x.setHistorico1(constroiHistoricoRateado(this.complemento1));
-				} else if (i == 2 & r.getValor2() != 0) {
-					x.setValor2(r.getValor2());
-					x.setContaReduzida2(r.getContaReduzida2());
-					x.setContaGradico2(r.getContaGradico2());
-					x.setComplemento2(this.complemento2);
-					x.setHistorico2(constroiHistoricoRateado(this.complemento2));
-				} else if (i == 3 & r.getValor3() != 0) {
-					x.setValor3(r.getValor3());
-					x.setContaReduzida3(r.getContaReduzida3());
-					x.setContaGradico3(r.getContaGradico3());
-					x.setComplemento3(this.complemento3);
-					x.setHistorico3(constroiHistoricoRateado(this.complemento3));
-				} else if (i == 4 & r.getValor4() != 0) {
-					x.setValor4(r.getValor4());
-					x.setContaReduzida4(r.getContaReduzida4());
-					x.setContaGradico4(r.getContaGradico4());
-					x.setComplemento4(this.complemento4);
-					x.setHistorico4(constroiHistoricoRateado(this.complemento4));
-				} else if (i == 5 & r.getValor5() != 0) {
-					x.setValor5(r.getValor5());
-					x.setContaReduzida5(r.getContaReduzida5());
-					x.setContaGradico5(r.getContaGradico5());
-					x.setComplemento5(this.complemento5);
-					x.setHistorico5(constroiHistoricoRateado(this.complemento5));
-				} else if (i == 6 & r.getValor6() != 0) {
-					x.setValor6(r.getValor6());
-					x.setContaReduzida6(r.getContaReduzida6());
-					x.setContaGradico6(r.getContaGradico6());
-					x.setComplemento6(this.complemento6);
-					x.setHistorico6(constroiHistoricoRateado(this.complemento6));
-				}
-			}
-			lista.add(x);
-		}
-
-		ReturnUltimoControlRatRN rur = new ReturnUltimoControlRatRN();
-
-		this.cndpagar.setCodigoRateio(rur.getCount());
-
-		this.cndpagar.setRateado(this.rateado);
-		boolean valida = false;
-
-		if (this.hideSalvar == 1) {
-			this.fncDAO.adicionaRateioSIP(this.cndpagar, this.sessaoMB, sessaoMB.getUsuario().getEmail(), lista,
-					this.listaArquivos);
-		} else {
-			valida = this.fncDAO.adicionaLanctoOmaRateado(this.cndpagar, this.sessaoMB.getUsuario().getEmail(), "oma",
-					lista, this.listaArquivos);
-		}
-
-		if (valida) {
-
-			this.cndpagar = new cndpagar();
-			this.rat = new rateio();
-
-			this.msgAdicinado();
-			volta = "lanc-sucesso?faces-redirect=true;";
-
-			RequestContext.getCurrentInstance().execute("PF('dlgObsLancto2').hide();");
-		} else {
-			this.msgErro();
-		}
-
 		return volta;
 	}
 
@@ -4060,7 +4289,7 @@ public class GED extends Mensagens {
 			FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
 					"Insira o nome da conta para pesquisar!", "Insira o nome da conta para pesquisar!"));
 		} else {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			this.lstConta = this.fncDAO.listarPlanoContaNome(this.nomeConta, this.condominio);
 			if (this.lstConta.size() == 0) {
 				FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
@@ -4099,7 +4328,7 @@ public class GED extends Mensagens {
 	public void addListaDeRateio() throws ParseException {
 
 		this.listaDeRateio = new ArrayList<>();
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		if (this.codRed1 != null) {
 			this.rat.setContaReduzida1(Integer.valueOf((this.codRed1.trim().isEmpty() ? 0 : this.codRed1).toString()));
 		} else {
@@ -4315,7 +4544,7 @@ public class GED extends Mensagens {
 			this.contaContabil = String.valueOf(this.cndpagar.getConta());
 		}
 
-		this.pesquisaContaCod();
+		// this.pesquisaContaCod();
 
 		if (this.cndpagar.getTipoDocumento() != null) {
 			this.tipoDocumento = this.cndpagar.getTipoDocumento();
@@ -4323,7 +4552,9 @@ public class GED extends Mensagens {
 		if (this.cndpagar.getCredor() != null) {
 			if (!this.cndpagar.getCredor().trim().isEmpty()) {
 				this.pesquisaFornecedorUsualcred(this.cndpagar.getCredor());
-				this.fornecedor = String.valueOf(this.fornecedorSelecionado.getInscricao());
+				if (this.fornecedorSelecionado != null) {
+					this.fornecedor = String.valueOf(this.fornecedorSelecionado.getInscricao());
+				}
 			}
 		}
 
@@ -4342,6 +4573,11 @@ public class GED extends Mensagens {
 
 		if (this.cndpagar.getHist() != null) {
 			this.complemento = this.cndpagar.getHist();
+		}
+
+		if (this.cndpagar.getTipoPagto() != null && this.cndpagar.getTipoPagto().equals("E")
+				&& this.cndpagar.getHistorico() != null) {
+			this.complemento = this.cndpagar.getHistorico();
 		}
 
 		if (this.cndpagar.getRateado() != null) {
@@ -4373,7 +4609,7 @@ public class GED extends Mensagens {
 		// ---------------------------------------------------//
 
 		if (this.cndpagar.getRateado().equals("S")) {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			this.lstRateioAlteracao = this.fncDAO.listarContasRateadas(this.cndpagar.getCodigoRateio());
 			int contador = 1;
 			for (cndpagar aux : this.lstRateioAlteracao) {
@@ -4425,7 +4661,7 @@ public class GED extends Mensagens {
 			this.tipoPagamento = this.cndpagar.getTipoPagto();
 		}
 		if (this.cndpagar.getTipoPagto() != null) {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			String cpfcnpj = "";
 			if (this.cndpagar.getTipoPagto().equals("5")) {
 
@@ -4439,15 +4675,17 @@ public class GED extends Mensagens {
 				this.cpf_cnpj = this.converte((long) this.cndpagar.getCnpj());
 				this.contaPoupanca = this.cndpagar.getTipoContaBancaria();
 
-				if (this.tipoPessoa.trim().equals("F")) {
-					while (this.cpf_cnpj.length() < 11) {
-						cpfcnpj = "0";
-						this.cpf_cnpj = cpfcnpj + this.cpf_cnpj;
-					}
-				} else if (this.tipoPessoa.trim().equals("J")) {
-					while (this.cpf_cnpj.length() < 14) {
-						cpfcnpj = "0";
-						this.cpf_cnpj = cpfcnpj + this.cpf_cnpj;
+				if (this.tipoPessoa != null) {
+					if (this.tipoPessoa.trim().equals("F")) {
+						while (this.cpf_cnpj.length() < 11) {
+							cpfcnpj = "0";
+							this.cpf_cnpj = cpfcnpj + this.cpf_cnpj;
+						}
+					} else if (this.tipoPessoa.trim().equals("J")) {
+						while (this.cpf_cnpj.length() < 14) {
+							cpfcnpj = "0";
+							this.cpf_cnpj = cpfcnpj + this.cpf_cnpj;
+						}
 					}
 				}
 
@@ -4490,10 +4728,9 @@ public class GED extends Mensagens {
 				this.listarLinhaDigitavel();
 			}
 		}
-		this.listaArquivos = new ArrayList<>();
-		if (this.cndpagar.getImagens() != null) {
-			this.listaArquivos.addAll(this.cndpagar.getImagens());
-		}
+
+		this.listaArquivos.addAll(new Imagem().retornaImagemCodigoLancto(this.cndpagar.getCodigo()));
+
 		this.lstExcArquivo = new ArrayList<>();
 		alterar = "financeiro?faces-redirect=true;";
 		return alterar;
@@ -4501,7 +4738,7 @@ public class GED extends Mensagens {
 
 	public void pesquisaFornecedorUsualcred(String usualcred) {
 		if (usualcred != null) {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			this.fornecedorSelecionado = this.fncDAO.pesquisaFornecedorUsualcred(usualcred);
 			if (this.fornecedorSelecionado != null && !this.fornecedorSelecionado.getNome().isEmpty()) {
 				this.nomeFornecedor = this.fornecedorSelecionado.getNome();
@@ -4514,64 +4751,68 @@ public class GED extends Mensagens {
 	}
 
 	public String alterarLancamento() {
-		this.cndpagar.setUsuarioAprovacao(null);
 		String alterar = "";
-		if (this.cndpagar.getCodigo() == 0) {
-			this.msgErro();
-		} else {
-			this.fncDAO = new FinanceiroDAO();
-			this.constroiCndpagar();
-			if (this.cndpagar.getRateado().equals("N")) {
-
-				// REMOVE APROVADORES APÓS ALTERAÇÃO
-				if (this.cndpagar.getParcelado().equals("S") && this.validaAlterar == 1) {
-					this.cndpagar = this.fncDAO.alterarLancamentoParcelado(this.cndpagar,
-							this.sessaoMB.getUsuario().getEmail(), "oma", this.lstExcArquivo, this.listaArquivos,
-							this.obsLancto);
-				} else {
-					List<cndpagar_aprovacao> listaAprovadores = new ArrayList<cndpagar_aprovacao>();
-					listaAprovadores.addAll(this.cndpagar.getAprovadores());
-					this.cndpagar.getAprovadores().clear();
-					this.fncDAO.alterarLancamento(this.cndpagar, this.sessaoMB.getUsuario().getEmail(), "oma",
-							this.lstExcArquivo, this.listaArquivos, this.obsLancto, this.validaAlterar);
-					this.fncDAO.removerAprovacoes(listaAprovadores);
-				}
+		try {
+			this.cndpagar.setUsuarioAprovacao(null);
+			if (this.cndpagar.getCodigo() == 0) {
+				this.msgErro();
 			} else {
-				for (cndpagar aux : this.lstRateioAlteracao) {
-					cndpagar lancto = (cndpagar) this.cndpagar.clone();
-					lancto.setConta(aux.getConta());
-					lancto.setValor(aux.getValor());
-					lancto.setCodigo(aux.getCodigo());
+				this.fncDAO = new FinanceiroDao();
+				this.constroiCndpagar();
+				if (this.cndpagar.getRateado().equals("N")) {
 
 					// REMOVE APROVADORES APÓS ALTERAÇÃO
-					List<cndpagar_aprovacao> listaAprovadores = new ArrayList<cndpagar_aprovacao>();
-					listaAprovadores.addAll(lancto.getAprovadores());
-					lancto.getAprovadores().clear();
-					this.fncDAO.alterarLancamento(lancto, this.sessaoMB.getUsuario().getEmail(), "oma",
-							this.lstExcArquivo, this.listaArquivos, this.obsLancto, this.validaAlterar);
-					this.fncDAO.removerAprovacoes(listaAprovadores);
-					lancto = new cndpagar();
+					if (this.cndpagar.getParcelado().equals("S") && this.validaAlterar == 1) {
+						this.cndpagar = this.fncDAO.alterarLancamentoParcelado(this.cndpagar,
+								this.sessaoMB.getUsuario().getEmail(), "oma", this.lstExcArquivo, this.listaArquivos,
+								this.obsLancto);
+					} else {
+						List<cndpagar_aprovacao> listaAprovadores = new ArrayList<cndpagar_aprovacao>();
+						listaAprovadores.addAll(this.cndpagar.getAprovadores());
+						this.cndpagar.getAprovadores().clear();
+						this.fncDAO.alterarLancamento(this.cndpagar, this.sessaoMB.getUsuario().getEmail(), "oma",
+								this.lstExcArquivo, this.listaArquivos, this.obsLancto, this.validaAlterar);
+						this.fncDAO.removerAprovacoes(listaAprovadores);
+					}
+				} else {
+					for (cndpagar aux : this.lstRateioAlteracao) {
+						cndpagar lancto = (cndpagar) this.cndpagar.clone();
+						lancto.setConta(aux.getConta());
+						lancto.setValor(aux.getValor());
+						lancto.setCodigo(aux.getCodigo());
+
+						// REMOVE APROVADORES APÓS ALTERAÇÃO
+						List<cndpagar_aprovacao> listaAprovadores = new ArrayList<cndpagar_aprovacao>();
+						listaAprovadores.addAll(lancto.getAprovadores());
+						lancto.getAprovadores().clear();
+						this.fncDAO.alterarLancamento(lancto, this.sessaoMB.getUsuario().getEmail(), "oma",
+								this.lstExcArquivo, this.listaArquivos, this.obsLancto, this.validaAlterar);
+						this.fncDAO.removerAprovacoes(listaAprovadores);
+						lancto = new cndpagar();
+					}
 				}
+				FacesContext.getCurrentInstance().addMessage(null,
+						new FacesMessage("Alterado com sucesso!", "Alterado com sucesso!"));
+				int cdLancamento = this.cndpagar.getCodigo();
+				this.reset();
+				this.alteracao = false;
+				this.grid1 = true;
+				this.grid2 = false;
+				this.grid3 = false;
+				this.cdFinancImagem = 0;
+				this.listaArquivos = null;
+				this.lstExcArquivo = null;
+				this.fncDAO = new FinanceiroDao();
+				this.cndpagar = this.fncDAO.pesquisarLancamento(cdLancamento);
+				this.lstRateioAlteracao = null;
+				this.obsLancto = null;
+				RequestContext.getCurrentInstance().execute("PF('dlgObsLancto1').hide()");
+				RequestContext.getCurrentInstance().execute("PF('dlgObsLancto2').hide()");
 			}
-			FacesContext.getCurrentInstance().addMessage(null,
-					new FacesMessage("Alterado com sucesso!", "Alterado com sucesso!"));
-			int cdLancamento = this.cndpagar.getCodigo();
-			this.reset();
-			this.alteracao = false;
-			this.grid1 = true;
-			this.grid2 = false;
-			this.grid3 = false;
-			this.cdFinancImagem = 0;
-			this.listaArquivos = null;
-			this.lstExcArquivo = null;
-			this.fncDAO = new FinanceiroDAO();
-			this.cndpagar = this.fncDAO.pesquisarLancamento(cdLancamento);
-			this.lstRateioAlteracao = null;
-			this.obsLancto = null;
-			RequestContext.getCurrentInstance().execute("PF('dlgObsLancto1').hide()");
-			RequestContext.getCurrentInstance().execute("PF('dlgObsLancto2').hide()");
+			alterar = "financeiro?faces-redirect=true;";
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
-		alterar = "financeiro?faces-redirect=true;";
 		return alterar;
 	}
 
@@ -4760,7 +5001,7 @@ public class GED extends Mensagens {
 			FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
 					"Insira o nome da conta para pesquisar!", "Insira o nome da conta para pesquisar!"));
 		} else {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			this.lstConta = this.fncDAO.listarPlanoContaNome(this.nomeConta, this.condominio);
 			if (this.lstConta.size() == 0) {
 				FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
@@ -4785,95 +5026,48 @@ public class GED extends Mensagens {
 				this.cpf_cnpj = cpfcnpj + this.cpf_cnpj;
 			}
 		}
-
 		if (!this.tipoPagamento.trim().equals("5") && !this.tipoPagamento.trim().equals("7")) {
 			return true;
 		}
-
 		if (this.cpf_cnpj.length() > 12) {
 			if (this.cpf_cnpj != null && !this.cpf_cnpj.trim().isEmpty()) {
 				if (validaCpfCnpj.validaCNPJ(this.cpf_cnpj)) {
-					/*
-					 * FacesContext.getCurrentInstance().addMessage(null, new
-					 * FacesMessage(FacesMessage.SEVERITY_INFO,
-					 * "CNPJ Favorecido válido !", "CNPJ Favorecido válido !"));
-					 * if (this.tipoPagamento.trim().trim().equals("7")) {
-					 * RequestContext.getCurrentInstance().update(
-					 * "frmLancamento:msg5"); } else if
-					 * (this.tipoPagamento.trim().equals("5")) {
-					 * RequestContext.getCurrentInstance().update(
-					 * "frmLancamento:msg6"); }
-					 */
 					return true;
 				} else {
-					/*
-					 * FacesContext.getCurrentInstance().addMessage(null, new
-					 * FacesMessage(FacesMessage.SEVERITY_WARN,
-					 * "CNPJ Favorecido inválido !",
-					 * "CNPJ Favorecido inválido !")); if
-					 * (this.tipoPagamento.trim().trim().equals("7")) {
-					 * RequestContext.getCurrentInstance().update(
-					 * "frmLancamento:msg5"); } else if
-					 * (this.tipoPagamento.trim().equals("5")) {
-					 * RequestContext.getCurrentInstance().update(
-					 * "frmLancamento:msg6"); }
-					 */
 					return false;
 				}
 			}
 		} else {
 			if (this.cpf_cnpj != null && !this.cpf_cnpj.trim().isEmpty()) {
 				if (validaCpfCnpj.validaCPF(this.cpf_cnpj)) {
-					/*
-					 * FacesContext.getCurrentInstance().addMessage(null, new
-					 * FacesMessage(FacesMessage.SEVERITY_INFO,
-					 * "CPF Favorecido válido !", "CPF Favorecido válido !"));
-					 * if (this.tipoPagamento.trim().trim().equals("7")) {
-					 * RequestContext.getCurrentInstance().update(
-					 * "frmLancamento:msg5"); } else if
-					 * (this.tipoPagamento.trim().equals("5")) {
-					 * RequestContext.getCurrentInstance().update(
-					 * "frmLancamento:msg6"); }
-					 */
 					return true;
 				} else {
-					/*
-					 * FacesContext.getCurrentInstance().addMessage(null, new
-					 * FacesMessage(FacesMessage.SEVERITY_WARN,
-					 * "CPF Favorecido inválido !", "CPF Favorecido inválido !"
-					 * )); if (this.tipoPagamento.trim().trim().equals("7")) {
-					 * RequestContext.getCurrentInstance().update(
-					 * "frmLancamento:msg5"); } else if
-					 * (this.tipoPagamento.trim().equals("5")) {
-					 * RequestContext.getCurrentInstance().update(
-					 * "frmLancamento:msg6"); }
-					 */
 					return false;
 				}
 			}
 		}
-
 		return false;
 	}
 
 	public void validaCPFIcon() {
 		String cpfcnpj = "";
 		this.validaCpfCnpj = new ValidaCPFCNPJ();
-		if (this.tipoPessoa.trim().equals("F")) {
+		if (this.tipoPessoa != null && this.tipoPessoa.trim().equals("F")) {
 			while (this.cpf_cnpj.length() < 11) {
 				cpfcnpj += "0";
 				this.cpf_cnpj = cpfcnpj + this.cpf_cnpj;
 			}
-		} else if (this.tipoPessoa.trim().equals("J")) {
+		} else if (this.tipoPessoa != null && this.tipoPessoa.trim().equals("J")) {
 			while (this.cpf_cnpj.length() < 14) {
 				cpfcnpj += "0";
 				this.cpf_cnpj = cpfcnpj + this.cpf_cnpj;
 			}
 		}
-		if (!this.tipoPagamento.trim().equals("5") && !this.tipoPagamento.trim().equals("7")) {
+		if (this.tipoPagamento != null
+				&& (!this.tipoPagamento.trim().equals("5") && !this.tipoPagamento.trim().equals("7"))) {
 			this.checkCPF = 2;
 		}
-		if (this.cpf_cnpj.length() > 12) {
+		if (this.cpf_cnpj != null && this.cpf_cnpj.length() > 12) {
 			if (this.cpf_cnpj != null && !this.cpf_cnpj.trim().isEmpty()) {
 				if (validaCpfCnpj.validaCNPJ(this.cpf_cnpj)) {
 					this.checkCPF = 2;
@@ -4893,10 +5087,10 @@ public class GED extends Mensagens {
 	}
 
 	public void listarHistPadrao() {
-		if (this.codigoHistPadrao != null && !this.codigoHistPadrao.trim().isEmpty()) {
-			this.fncDAO = new FinanceiroDAO();
+		if (!this.codigoHistPadrao.trim().isEmpty()) {
+			this.fncDAO = new FinanceiroDao();
 			String valor = this.fncDAO.listarHistoricoPadrao(Integer.valueOf(this.codigoHistPadrao));
-			if (valor != null && !valor.trim().isEmpty()) {
+			if (!valor.trim().isEmpty()) {
 				this.complemento = valor;
 			} else {
 				this.msgHistPadrao = "Nenhuma histórico encontrada!";
@@ -4905,19 +5099,25 @@ public class GED extends Mensagens {
 	}
 
 	public String listarFornecedor(String credor) {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		String nome = "";
-		if (!credor.trim().isEmpty()) {
-			nome = this.fncDAO.listarCredorNome(credor).toString();
+		if (credor != null) {
+			if (!credor.trim().isEmpty()) {
+				if (!credor.trim().equals("null") && !credor.trim().equals("NULL")) {
+					nome = this.fncDAO.listarCredorNome(credor).toString();
+				}
+			}
 		}
 		return nome;
 	}
 
 	public String listarFornecedorCNPJ(String credor) {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		String cnpj = "";
-		if (!credor.trim().isEmpty()) {
-			cnpj = this.fncDAO.listarCredorCNPJ(credor).toString();
+		if (credor != null) {
+			if (!credor.trim().isEmpty()) {
+				cnpj = this.fncDAO.listarCredorCNPJ(credor).toString();
+			}
 		}
 		return cnpj;
 	}
@@ -4938,21 +5138,35 @@ public class GED extends Mensagens {
 		} else {
 			return true;
 		}
-
 	}
 
 	public void salvarLanctoSIP() throws ParseException {
 		try {
 			FinanceiroImpostosDAO fiDAO = new FinanceiroImpostosDAO();
 			this.cndpagar.setUsuarioAprovacao(null);
-			if (this.fornecedor == null || this.fornecedor.isEmpty()) {
-				FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
-						"Fornecedor não informado!", "Fornecedor não informado!"));
-				RequestContext.getCurrentInstance().update("frmPreLancto:msg0");
-			} else {
+			if (sessaoMB.getUsuario().getUsuarioWeb() != null
+					&& !sessaoMB.getUsuario().getUsuarioWeb().trim().isEmpty()) {
+				this.cndpagar.setUsuarioWeb(this.sessaoMB.getUsuario().getUsuarioWeb());
+			}
 
-				if (this.validaSalvarLanctoSIP()) {
+			if (this.fornecedor == null || this.fornecedor.isEmpty()) {
+				throw new IntranetException("Fornecedor não informado!");
+			}
+			if (this.imagemSelecionada == null) {
+				this.imagemSelecionada = this.listaArquivos.get(0);
+			}
+
+			if (this.validaSalvarLanctoSIP()) {
+				if (this.validaConta()) {
 					this.constroiCndpagar();
+
+					if (this.tipoPessoa != null) {
+						if (this.tipoPessoa.equals("F")) {
+							this.fornecedor = "0";
+							this.pesquisaFornecedor();
+						}
+					}
+
 					if (this.retornoCPFCNPJ()) {
 						if (this.cndpagar.getConta() == 0) {
 							FacesContext.getCurrentInstance().addMessage(null,
@@ -4971,6 +5185,7 @@ public class GED extends Mensagens {
 							}
 
 							boolean retorno = false;
+
 							this.blackListMB.setCondominio(this.cndpagar.getCondominio());
 							this.blackListMB.setCodigoGerente(this.cndpagar.getCodigoGerente());
 							this.blackListMB.setContaContabil(Integer.valueOf(this.contaContabil));
@@ -4987,18 +5202,76 @@ public class GED extends Mensagens {
 								}
 								this.cndpagar.setSuspensoGerente(3);
 							}
-							this.cndpagar.setEstimado("P");
+							this.cndpagar.setEstimado("R");
 
 							if (!retorno) {
+								if (this.sessaoMB.getUsuario().getUsuarioWeb() != null
+										&& !this.sessaoMB.getUsuario().getUsuarioWeb().isEmpty()) {
+									this.cndpagar.setUsuarioWeb(this.sessaoMB.getUsuario().getUsuarioWeb());
+								}
+
 								boolean salvar;
 								this.fncDAO.excluirLanctoSIGA(this.cndpagar);
 								salvar = this.salvarSIPSIGA();
 								if (salvar) {
 									this.fncDAO.adicionaLanctoSIP(this.cndpagar, this.sessaoMB, this.obsLancto);
-
+									this.service = new GEDService();
 									if (this.cndpagar.getReterImposto() != null
 											&& this.cndpagar.getReterImposto().equals("S")) {
 										this.fncDAO.updateTributoImpos(this.cndpagar);
+										this.fncDAO.updateTributoImposSigadm(this.cndpagar);
+
+										List<sgimpos> lista = this.fncDAO.listarImpos(this.cndpagar.getNrolancto());
+										if (!lista.isEmpty()) {
+											ConstroiTributosCndPagarAUX aux = new ConstroiTributosCndPagarAUX();
+											for (sgimpos impos : lista) {
+												String numeroNota = "";
+												if (impos.getNumero_nf() != null && !impos.getNumero_nf().isEmpty()) {
+													numeroNota = impos.getNumero_nf();
+												} else if (this.cndpagar.getNumeroNf() != null) {
+													numeroNota = String.valueOf(this.cndpagar.getNumeroNf());
+												}
+
+												cndpagar lancto = aux.constroiCndPagar(this.cndpagar, impos);
+												String nomeFornecedor = this.service
+														.retornaNomeCredor(this.cndpagar.getCredor());
+												List<String> nomeCondominio = this.service
+														.retornaNomeCondominio(this.cndpagar.getCondominio());
+												double cnpf = this.service.retornaCNPJCredo(this.cndpagar.getCredor());
+												if (impos.getTipo_imposto() == 1) {
+													lancto.setHistorico("INSS " + numeroNota + " " + nomeFornecedor);
+													lancto.setCnpj(cnpf);
+													lancto.setCodPagto((int) impos.getCod_receita());
+													lancto.setCodReceita((int) impos.getCod_receita());
+													lancto.setContribuinte(nomeFornecedor);
+												} else if (impos.getTipo_imposto() == 2) {
+													lancto.setHistorico("ISS " + numeroNota + " " + nomeFornecedor);
+													lancto.setCodPagto((int) impos.getCod_receita());
+													lancto.setCodReceita((int) impos.getCod_receita());
+												} else if (impos.getTipo_imposto() == 3) {
+													lancto.setHistorico("IRRF " + numeroNota + " " + nomeFornecedor);
+													lancto.setCodPagto((int) impos.getCod_receita());
+													lancto.setCodReceita((int) impos.getCod_receita());
+												} else if (impos.getTipo_imposto() == 4) {
+													lancto.setHistorico(
+															"CSLL/COFINS/PIS " + numeroNota + " " + nomeFornecedor);
+													lancto.setCodPagto((int) impos.getCod_receita());
+													lancto.setCodReceita((int) impos.getCod_receita());
+													lancto.setContribuinte(nomeCondominio.get(0));
+													lancto.setCnpj(Double.valueOf(nomeCondominio.get(1)));
+												}
+												lancto.setDocumento(
+														this.service.retornoDocumento(this.cndpagar.getNrolancto()));
+												if (impos.getTipo_imposto() != 2) {
+													lancto.setNrolancto(this.service.retornaNroLanctoSiga());
+													this.service.salvarLanctoImposto(lancto);
+													this.service.updateManutecaoImpostos(lancto.getNrolancto(),
+															this.cndpagar.getNrolancto(), impos.getTipo_imposto());
+												}
+
+												lancto = new cndpagar();
+											}
+										}
 									}
 
 									FacesContext.getCurrentInstance().addMessage(null,
@@ -5023,6 +5296,7 @@ public class GED extends Mensagens {
 								if (this.cndpagar.getReterImposto() != null
 										&& this.cndpagar.getReterImposto().equals("S")) {
 									this.fncDAO.updateTributoImpos(this.cndpagar);
+									this.fncDAO.updateTributoImposSigadm(this.cndpagar);
 								}
 
 								FacesContext.getCurrentInstance().addMessage(null,
@@ -5034,12 +5308,239 @@ public class GED extends Mensagens {
 								this.obsLancto = "";
 								this.voltar();
 							}
-
 						}
 					}
 				}
 			}
+		} catch (IntranetException e) {
+			FacesContext.getCurrentInstance().addMessage(null,
+					new FacesMessage(FacesMessage.SEVERITY_WARN, e.getMessage(), ""));
+			e.printStackTrace();
 		} catch (Exception e) {
+			FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
+					"Ocorreu um erro inesperado! Entre em contato com o administrador.", ""));
+			e.printStackTrace();
+		}
+	}
+
+	public boolean validaConta() {
+		this.fncDAO = new FinanceiroDao();
+		if (this.contaContabil != null) {
+			this.lstConta = this.fncDAO.listarPlanoConta(Integer.parseInt(this.contaContabil),
+					Short.valueOf(String.valueOf(this.condominio)));
+			if (this.lstConta != null && this.lstConta.size() > 0) {
+				return true;
+			} else {
+				FacesContext.getCurrentInstance().addMessage(null,
+						new FacesMessage(FacesMessage.SEVERITY_WARN, "Conta não encontrada!", "Conta não encontrada!"));
+				RequestContext.getCurrentInstance().update("frmPreLancto:msg0");
+				return false;
+			}
+		} else {
+			return false;
+		}
+	}
+
+	public void salvarLanctoSIPEIrParaOProximo() throws ParseException {
+		try {
+			FinanceiroImpostosDAO fiDAO = new FinanceiroImpostosDAO();
+			this.cndpagar.setUsuarioAprovacao(null);
+			if (sessaoMB.getUsuario().getUsuarioWeb() != null
+					&& !sessaoMB.getUsuario().getUsuarioWeb().trim().isEmpty()) {
+				this.cndpagar.setUsuarioWeb(this.sessaoMB.getUsuario().getUsuarioWeb());
+			}
+
+			if (this.fornecedor == null || this.fornecedor.isEmpty()) {
+				throw new IntranetException("Fornecedor não informado!");
+			}
+
+			if (this.validaSalvarLanctoSIP()) {
+				this.constroiCndpagar();
+
+				if (this.tipoPessoa != null) {
+					if (this.tipoPessoa.equals("F")) {
+						this.fornecedor = "0";
+						this.pesquisaFornecedor();
+					}
+				}
+
+				if (this.retornoCPFCNPJ()) {
+					if (this.cndpagar.getConta() == 0) {
+						FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
+								"Conta contabil não informada!", "Conta contabil não informada!"));
+						RequestContext.getCurrentInstance().update("frmPreLancto:msg0");
+					} else {
+
+						if (this.hideSalvar == 1) {
+							this.cndpagar.setStatusSIP(4);
+							this.cndpagar.setFeitoLanctoSIP(new Date());
+						} else if (this.hideSalvar == 2) {
+							this.cndpagar.setStatusSIP(5);
+							this.cndpagar.setVistoGerente(true);
+							this.cndpagar.setFeitoGerenteSIP(new Date());
+						}
+
+						boolean retorno = false;
+
+						this.blackListMB.setCondominio(this.cndpagar.getCondominio());
+						this.blackListMB.setCodigoGerente(this.cndpagar.getCodigoGerente());
+						this.blackListMB.setContaContabil(Integer.valueOf(this.contaContabil));
+						this.blackListMB.setCnpj(Double.valueOf(this.cndpagar.getFornecedorCnpj()));
+
+						retorno = fiDAO.verificaBlackList(this.blackListMB);
+
+						if (retorno) {
+							if (this.obsLancto == null) {
+								this.obsLancto = "Feito pelo Lançamento - Lançamento suspenso pela BlackList";
+							} else {
+								this.obsLancto = "Feito Lançamento -" + this.obsLancto
+										+ "- Lançamento suspenso pela BlackList";
+							}
+							this.cndpagar.setSuspensoGerente(3);
+						}
+						this.cndpagar.setEstimado("R");
+
+						if (!retorno) {
+
+							if (this.sessaoMB.getUsuario().getUsuarioWeb() != null
+									&& !this.sessaoMB.getUsuario().getUsuarioWeb().isEmpty()) {
+								this.cndpagar.setUsuarioWeb(this.sessaoMB.getUsuario().getUsuarioWeb());
+							}
+
+							boolean salvar;
+							this.fncDAO.excluirLanctoSIGA(this.cndpagar);
+							salvar = this.salvarSIPSIGA();
+							if (salvar) {
+								this.fncDAO.adicionaLanctoSIP(this.cndpagar, this.sessaoMB, this.obsLancto);
+								this.service = new GEDService();
+								if (this.cndpagar.getReterImposto() != null
+										&& this.cndpagar.getReterImposto().equals("S")) {
+									this.fncDAO.updateTributoImpos(this.cndpagar);
+									this.fncDAO.updateTributoImposSigadm(this.cndpagar);
+
+									List<sgimpos> lista = this.fncDAO.listarImpos(this.cndpagar.getNrolancto());
+									if (!lista.isEmpty()) {
+										ConstroiTributosCndPagarAUX aux = new ConstroiTributosCndPagarAUX();
+										for (sgimpos impos : lista) {
+											String numeroNota = "";
+											if (impos.getNumero_nf() != null && !impos.getNumero_nf().isEmpty()) {
+												numeroNota = impos.getNumero_nf();
+											} else if (this.cndpagar.getNumeroNf() != null) {
+												numeroNota = String.valueOf(this.cndpagar.getNumeroNf());
+											}
+
+											cndpagar lancto = aux.constroiCndPagar(this.cndpagar, impos);
+											String nomeFornecedor = this.service
+													.retornaNomeCredor(this.cndpagar.getCredor());
+											List<String> nomeCondominio = this.service
+													.retornaNomeCondominio(this.cndpagar.getCondominio());
+											double cnpf = this.service.retornaCNPJCredo(this.cndpagar.getCredor());
+											if (impos.getTipo_imposto() == 1) {
+												lancto.setHistorico("INSS " + numeroNota + " " + nomeFornecedor);
+												lancto.setCnpj(cnpf);
+												lancto.setCodPagto((int) impos.getCod_receita());
+												lancto.setCodReceita((int) impos.getCod_receita());
+												lancto.setContribuinte(nomeFornecedor);
+											} else if (impos.getTipo_imposto() == 2) {
+												lancto.setHistorico("ISS " + numeroNota + " " + nomeFornecedor);
+												lancto.setCodPagto((int) impos.getCod_receita());
+												lancto.setCodReceita((int) impos.getCod_receita());
+											} else if (impos.getTipo_imposto() == 3) {
+												lancto.setHistorico("IRRF " + numeroNota + " " + nomeFornecedor);
+												lancto.setCodPagto((int) impos.getCod_receita());
+												lancto.setCodReceita((int) impos.getCod_receita());
+											} else if (impos.getTipo_imposto() == 4) {
+												lancto.setHistorico(
+														"CSLL/COFINS/PIS " + numeroNota + " " + nomeFornecedor);
+												lancto.setCodPagto((int) impos.getCod_receita());
+												lancto.setCodReceita((int) impos.getCod_receita());
+												lancto.setContribuinte(nomeCondominio.get(0));
+												lancto.setCnpj(Double.valueOf(nomeCondominio.get(1)));
+											}
+											lancto.setDocumento(
+													this.service.retornoDocumento(this.cndpagar.getNrolancto()));
+											if (impos.getTipo_imposto() != 2) {
+												lancto.setNrolancto(this.service.retornaNroLanctoSiga());
+
+												this.service.salvarLanctoImposto(lancto);
+												this.service.updateManutecaoImpostos(lancto.getNrolancto(),
+														this.cndpagar.getNrolancto(), impos.getTipo_imposto());
+											}
+
+											lancto = new cndpagar();
+										}
+									}
+								}
+
+								this.listarCndpagarContas = null;
+								this.listarCndpagarGerente = null;
+								this.obsLancto = "";
+
+								this.opcaoLancto = 0;
+								List<cndpagar> l = this.fncDAO.getListaLancamentoContas(0,
+										this.sessaoMB.getUsuario().getEmail(), this.filtroCndpagarContasInicial,
+										this.filtroCndpagarContasFinal);
+								cndpagar proximoLancamento = null;
+								for (cndpagar aux : l) {
+									proximoLancamento = aux;
+									break;
+								}
+								if (proximoLancamento != null) {
+									this.fncDAO.setUsuarioAprovacao(proximoLancamento.getCodigo(),
+											this.sessaoMB.getUsuario().getEmail());
+									avancar(proximoLancamento, 1);
+								} else {
+									this.voltar();
+								}
+
+							} else {
+								this.cndpagar.setStatusSIP(3);
+								FacesContext.getCurrentInstance().addMessage(null,
+										new FacesMessage(FacesMessage.SEVERITY_ERROR,
+												"Erro - Não foi possível salvar esse Lançamento!",
+												"Erro - Não foi possível salvar esse Lançamento!"));
+								RequestContext.getCurrentInstance().update("frmPreLancto:msg5");
+							}
+						} else {
+							this.fncDAO.adicionaLanctoSIP(this.cndpagar, this.sessaoMB, this.obsLancto);
+
+							if (this.cndpagar.getReterImposto() != null
+									&& this.cndpagar.getReterImposto().equals("S")) {
+								this.fncDAO.updateTributoImpos(this.cndpagar);
+								this.fncDAO.updateTributoImposSigadm(this.cndpagar);
+							}
+
+							this.listarCndpagarContas = null;
+							this.listarCndpagarGerente = null;
+							this.obsLancto = "";
+
+							this.opcaoLancto = 0;
+							List<cndpagar> l = this.fncDAO.getListaLancamentoContas(0,
+									this.sessaoMB.getUsuario().getEmail(), this.filtroCndpagarContasInicial,
+									this.filtroCndpagarContasFinal);
+							cndpagar proximoLancamento = null;
+							for (cndpagar aux : l) {
+								proximoLancamento = aux;
+								break;
+							}
+							if (proximoLancamento != null) {
+								this.fncDAO.setUsuarioAprovacao(proximoLancamento.getCodigo(),
+										this.sessaoMB.getUsuario().getEmail());
+								avancar(proximoLancamento, 1);
+							} else {
+								this.voltar();
+							}
+						}
+					}
+				}
+			}
+		} catch (IntranetException e) {
+			FacesContext.getCurrentInstance().addMessage(null,
+					new FacesMessage(FacesMessage.SEVERITY_WARN, e.getMessage(), ""));
+			e.printStackTrace();
+		} catch (Exception e) {
+			FacesContext.getCurrentInstance().addMessage(null, new FacesMessage(FacesMessage.SEVERITY_WARN,
+					"Ocorreu um erro inesperado! Entre em contato com o administrador.", ""));
 			e.printStackTrace();
 		}
 	}
@@ -5075,37 +5576,194 @@ public class GED extends Mensagens {
 	}
 
 	public void excluirLancamentoSIP() {
-		this.fncDAO = new FinanceiroDAO();
-		if (this.pagarLS != null && this.pagarLS.getCodigo() > 0) {
-			List<cndpagar_aprovacao> listaAprovadores = null;
+		try {
+			this.fncDAO = new FinanceiroDao();
+			if (this.pagarLS != null && this.pagarLS.getCodigo() > 0) {
+				List<cndpagar_aprovacao> listaAprovadores = null;
 
-			if (this.pagarLS.getCodigoRateio() > 0 && this.pagarLS.getRateado().equals("S")) {
-				List<cndpagar> lista = fncDAO.listaDeCndpagarRateado(this.pagarLS);
-				for (cndpagar aux : lista) {
-					listaAprovadores = new ArrayList<cndpagar_aprovacao>();
-					listaAprovadores.addAll(aux.getAprovadores());
+				if (this.pagarLS.getCodigoRateio() > 0 && this.pagarLS.getRateado().equals("S")) {
+					List<cndpagar> lista = fncDAO.listaDeCndpagarRateado(this.pagarLS);
+					for (cndpagar aux : lista) {
+						listaAprovadores = new ArrayList<cndpagar_aprovacao>();
+						listaAprovadores.addAll(aux.getAprovadores());
+					}
 				}
+
+				this.fncDAO.excluirLancamento(this.pagarLS, this.sessaoMB.getUsuario().getEmail(), "oma",
+						this.obsLancto);
+				this.fncDAO.excluirLanctoSIGA(this.pagarLS);
+
+				RequestContext.getCurrentInstance().execute("PF('dlgExclui').hide();");
+				this.listaDePagar = null;
+				this.filtroDePagar = null;
+				this.listarGed = null;
+				this.listarCndpagarContas = null;
+				this.listarCndpagarGerente = null;
+				this.cdFinancImagem = 0;
+				this.obsLancto = null;
+				this.msgExclusao();
+				RequestContext.getCurrentInstance().execute("frmLancto:msg0");
+			} else {
+				this.msgRegistro();
 			}
-
-			this.fncDAO.excluirLancamento(this.pagarLS, this.sessaoMB.getUsuario().getEmail(), "oma", this.obsLancto);
-			this.fncDAO.excluirLanctoSIGA(this.pagarLS);
-
-			RequestContext.getCurrentInstance().execute("PF('dlgExclui').hide();");
-			this.listaDePagar = null;
-			this.filtroDePagar = null;
-			this.listarGed = null;
-			this.listarCndpagarContas = null;
-			this.listarCndpagarGerente = null;
-			this.cdFinancImagem = 0;
-			this.obsLancto = null;
-			this.msgExclusao();
-			RequestContext.getCurrentInstance().execute("frmLancto:msg0");
-		} else {
-			this.msgRegistro();
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 	}
 
-	public boolean retornoCPFCNPJ() {
+	public void excluirLancamentoContasSIP(int departamento) {
+		try {
+			this.fncDAO = new FinanceiroDao();
+			boolean exclusao = false;
+			double etiquetaImagem = 0;
+			if (this.pagarLS != null && this.pagarLS.getCodigo() > 0) {
+				List<cndpagar_aprovacao> listaAprovadores = null;
+				if (this.pagarLS.getCodigoRateio() > 0 && this.pagarLS.getRateado().equals("S")) {
+					List<cndpagar> lista = this.fncDAO.listaDeCndpagarRateado(this.pagarLS);
+					for (cndpagar aux : lista) {
+						listaAprovadores = new ArrayList<cndpagar_aprovacao>();
+						listaAprovadores.addAll(aux.getAprovadores());
+					}
+				}
+				List<Object[]> listaExclusao = new ArrayList<>();
+				listaExclusao = this.fncDAO.listarSigadmExclusao(this.pagarLS);
+				if (listaExclusao != null && !listaExclusao.isEmpty()) {
+					for (Object[] obj : listaExclusao) {
+						if (obj[0] == null || obj[0].toString().isEmpty()) {
+							etiquetaImagem = this.fncDAO.pesquisaEtiqueta(this.pagarLS.getCodigo());
+							this.fncDAO.excluirLancamento(this.pagarLS, this.sessaoMB.getUsuario().getEmail(), "oma",
+									this.obsLancto);
+							this.fncDAO.excluirLanctoSIGA(this.pagarLS);
+							this.controleExclusaoLancamento(etiquetaImagem);
+							if (this.pagarLS.getReterImposto() != null
+									&& this.pagarLS.getReterImposto().trim().equals("S")) {
+								List<sgimpos> impos = this.fncDAO.listarTributos(this.pagarLS.getNrolancto());
+								List<sgimpos> valida = new ArrayList<>();
+								if (impos != null && !impos.isEmpty()) {
+									for (sgimpos i : impos) {
+										if (i.getLancto_gerado() > 0) {
+											int valor = this.fncDAO.deletarNrolanctoGeradoTributo(i.getLancto_gerado());
+											if (valor == 0) {
+												valida.add(i);
+											} else {
+												this.fncDAO.excluirTributoSgimposSigadm(this.pagarLS.getNrolancto(),
+														i.getTipo_imposto());
+											}
+										} else if (i.getLancto_gerado() == 0) {
+											this.fncDAO.excluirTributoSgimposSigadm(this.pagarLS.getNrolancto(),
+													i.getTipo_imposto());
+										} else {
+											valida.add(i);
+										}
+									}
+									if (valida.isEmpty()) {
+										this.fncDAO.excluirTributosSgltimpSgretenSigadm(this.pagarLS.getNrolancto());
+									}
+								}
+							}
+							exclusao = true;
+						} else {
+							int valor = Integer.valueOf(obj[0].toString());
+							if (valor == 0) {
+								etiquetaImagem = this.fncDAO.pesquisaEtiqueta(this.pagarLS.getCodigo());
+								this.fncDAO.excluirLancamento(this.pagarLS, this.sessaoMB.getUsuario().getEmail(),
+										"oma", this.obsLancto);
+								this.fncDAO.excluirLanctoSIGA(this.pagarLS);
+								this.controleExclusaoLancamento(etiquetaImagem);
+								if (this.pagarLS.getReterImposto() != null
+										&& this.pagarLS.getReterImposto().trim().equals("S")) {
+									List<sgimpos> impos = this.fncDAO.listarTributos(this.pagarLS.getNrolancto());
+									List<sgimpos> valida = new ArrayList<>();
+									if (impos != null && !impos.isEmpty()) {
+										for (sgimpos i : impos) {
+											if (i.getLancto_gerado() > 0) {
+												int valor2 = this.fncDAO
+														.deletarNrolanctoGeradoTributo(i.getLancto_gerado());
+												if (valor2 == 0) {
+													valida.add(i);
+												} else {
+													this.fncDAO.excluirTributoSgimposSigadm(this.pagarLS.getNrolancto(),
+															i.getTipo_imposto());
+												}
+											} else if (i.getLancto_gerado() == 0) {
+												this.fncDAO.excluirTributoSgimposSigadm(this.pagarLS.getNrolancto(),
+														i.getTipo_imposto());
+											} else {
+												valida.add(i);
+											}
+										}
+										if (valida.isEmpty()) {
+											this.fncDAO
+													.excluirTributosSgltimpSgretenSigadm(this.pagarLS.getNrolancto());
+										}
+									}
+								}
+								exclusao = true;
+							} else {
+								this.msgExclusaoLanctoContas();
+							}
+						}
+					}
+				} else {
+					this.fncDAO.excluirLancamento(this.pagarLS, this.sessaoMB.getUsuario().getEmail(), "oma",
+							this.obsLancto);
+					etiquetaImagem = this.fncDAO.pesquisaEtiqueta(this.pagarLS.getCodigo());
+					this.controleExclusaoLancamento(etiquetaImagem);
+					exclusao = true;
+				}
+				if (exclusao) {
+					List<String> lista = this.fncDAO.listaDePooGerente(this.pagarLS);
+					this.fornecedorSelecionado = this.fncDAO.pesquisaFornecedorUsualcred(this.pagarLS.getCredor());
+					Thread t = new Thread(new EnvioDeEmailsThread(etiquetaImagem, this.pagarLS, departamento, lista,
+							this.obsLancto, this.sessaoMB.getUsuario().getEmail(), this.fornecedorSelecionado));
+					t.start();
+				}
+				if (exclusao) {
+					if (departamento == 3 || departamento == 4) {
+						RequestContext.getCurrentInstance().execute("PF('dlgExcluirSipLancto').hide();");
+					}
+					this.listaDePagar = null;
+					this.filtroDePagar = null;
+					this.listarGed = null;
+					this.listarCndpagarContas = null;
+					this.listarCndpagarGerente = null;
+					this.cdFinancImagem = 0;
+					this.obsLancto = null;
+					this.msgExclusao();
+				}
+			} else {
+				this.msgRegistro();
+			}
+			if (exclusao && departamento > 2) {
+				this.listarLancto();
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+
+	private void controleExclusaoLancamento(double etiquetaImagem) {
+		this.fncDAO = new FinanceiroDao();
+		exclusao_lancamento el = new exclusao_lancamento();
+		el.setCodigo(this.pagarLS.getCodigo());
+		el.setCondominio(this.pagarLS.getCondominio());
+		el.setCriado(this.pagarLS.getDataInclusao());
+		el.setExcluido(new Date());
+		el.setExcluidoPor(this.sessaoMB.getUsuario().getEmail());
+		el.setMotivoExclusao(this.obsLancto);
+		el.setNrolancto(this.pagarLS.getNrolancto());
+		el.setValorBruto(this.pagarLS.getValorLancto());
+		el.setValorLiquido(this.pagarLS.getValor());
+		el.setVencimento(this.pagarLS.getVencimento());
+		el.setEtiqueta(etiquetaImagem);
+		el.setCodigoGerente(this.pagarLS.getCodigoGerente());
+		this.fncDAO.salvarLogExclusaoLancamento(el);
+	}
+
+	public boolean retornoCPFCNPJ() throws IntranetException {
+		if (this.cndpagar.getTipoPagto() == null) {
+			throw new IntranetException("Informe o tipo de pagamento!");
+		}
 		if (this.cndpagar.getTipoPagto().trim().equals("5") || this.cndpagar.getTipoPagto().trim().equals("7")) {
 			if (this.cpf_cnpj == null) {
 				return true;
@@ -5118,7 +5776,7 @@ public class GED extends Mensagens {
 	}
 
 	public void avancar(cndpagar pagar, int valor) {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		this.proxima1 = false;
 		this.proxima2 = true;
 		this.cndpagar = this.fncDAO.pesqLancto(pagar.getCodigo());
@@ -5128,7 +5786,7 @@ public class GED extends Mensagens {
 	}
 
 	public void avancar2(cndpagar pagar, int valor) {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		this.proxima1 = false;
 		this.proxima2 = true;
 		this.cndpagar = pagar;
@@ -5144,7 +5802,16 @@ public class GED extends Mensagens {
 		this.listarCndpagarGerente = null;
 		this.cdImagem = 0;
 		this.codigoHistPadrao = "";
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
+		this.imagemSelecionada = null;
+		this.buscaImagem = "";
+
+		this.filtroCndpagarGerente = null;
+		DataTable d = (DataTable) FacesContext.getCurrentInstance().getViewRoot()
+				.findComponent("frmPreLancto:dtLancto");
+		d.setValue(null);
+		RequestContext.getCurrentInstance().execute("$('.ui-column-filter').val('');");
+
 		this.reset();
 	}
 
@@ -5176,7 +5843,7 @@ public class GED extends Mensagens {
 
 	public void bloquearLiberar(cndpagar pagar, int valor, int setor) {
 		pagar.setUsuarioAprovacao(null);
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		this.fncDAO.liberarPagamento(pagar, valor, this.sessaoMB, setor);
 		if (valor == 1) {
 			FacesContext.getCurrentInstance().addMessage(null,
@@ -5199,14 +5866,14 @@ public class GED extends Mensagens {
 	}
 
 	public void salvarVisto(cndpagar visto) {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		this.cndpagar = visto;
 
 		this.cndpagar.setUsuarioAprovacao(null);
 		this.cndpagar.setStatusSIP(5);
 		this.cndpagar.setVistoGerente(true);
 		this.cndpagar.setFeitoGerenteSIP(new Date());
-		this.cndpagar.setEstimado("P");
+		this.cndpagar.setEstimado("R");
 		this.fncDAO.adicionaLanctoSIP(this.cndpagar, this.sessaoMB, this.obsLancto);
 
 		this.fncDAO.updateSGLTIMP(this.cndpagar);
@@ -5231,55 +5898,125 @@ public class GED extends Mensagens {
 	}
 
 	public void suspenderLiberar(cndpagar p) {
+		LancamentoDAO dao = new LancamentoDAO();
 		this.pagarLS = p;
+		this.pagarLS.setImagens(dao.pesquisarImagensLazy(this.pagarLS.getCodigo()));
+
+		Collection<financeiro_imagem> l = this.pagarLS.getImagens();
+		for (financeiro_imagem f : l) {
+			this.imagemSelecionada = f;
+		}
+
 	}
 
 	public void suspenderLiberarLancamento(int acao, int setor) {
 		this.pagarLS.setUsuarioAprovacao(null);
-		this.fncDAO = new FinanceiroDAO();
-		if (setor == 1) {
-			if (acao == 1) {
-				this.fncDAO.suspenderLiberarLancto(this.pagarLS, acao, setor, this.sessaoMB, this.obsLancto, this.imagemSelecionada.getId());
-				this.listarCndpagarContas = null;
-				this.listarCndpagarGerente = null;
-				this.obsLancto = "";
-				FacesContext.getCurrentInstance().addMessage(null,
-						new FacesMessage(FacesMessage.SEVERITY_INFO, "Suspenso", "Suspenso"));
-				this.voltar();
-			} else if (acao == 2) {
-				this.fncDAO.suspenderLiberarLancto(this.pagarLS, acao, setor, this.sessaoMB, this.obsLancto, this.imagemSelecionada.getId());
-				this.listarCndpagarContas = null;
-				this.listarCndpagarGerente = null;
-				this.obsLancto = "";
-				FacesContext.getCurrentInstance().addMessage(null,
-						new FacesMessage(FacesMessage.SEVERITY_INFO, "Liberado", "Liberado"));
-				this.voltar();
+		LancamentoDAO dao = new LancamentoDAO();
+		this.fncDAO = new FinanceiroDao();
+		if (this.pagarLS.getCodigo() > 0) {
+			this.pagarLS.setImagens(dao.pesquisarImagensLazy(this.pagarLS.getCodigo()));
+		}
+		boolean validaNroRemessa = false;
+		List<Object[]> listaExclusao = new ArrayList<>();
+		listaExclusao = this.fncDAO.listarSigadmExclusao(this.pagarLS);
+
+		if (listaExclusao != null && !listaExclusao.isEmpty()) {
+			for (Object[] obj : listaExclusao) {
+				if (obj[0] == null || obj[0].toString().isEmpty()) {
+					validaNroRemessa = true;
+				} else if (Integer.valueOf(obj[0].toString()) == 0) {
+					validaNroRemessa = true;
+					break;
+				} else {
+					this.msgExclusaoLanctoContas();
+					break;
+				}
 			}
-		} else if (setor == 2) {
-			if (acao == 1) {
-				this.fncDAO.suspenderLiberarLancto(this.pagarLS, acao, setor, this.sessaoMB, this.obsLancto, this.imagemSelecionada.getId());
-				this.fncDAO.excluirTributos(this.pagarLS);
-				this.listarCndpagarContas = null;
-				this.listarCndpagarGerente = null;
-				this.obsLancto = "";
-				FacesContext.getCurrentInstance().addMessage(null,
-						new FacesMessage(FacesMessage.SEVERITY_INFO, "Suspenso", "Suspenso"));
-				this.voltar();
-			} else if (acao == 2) {
-				this.fncDAO.suspenderLiberarLancto(this.pagarLS, acao, setor, this.sessaoMB, this.obsLancto, this.imagemSelecionada.getId());
-				this.listarCndpagarContas = null;
-				this.listarCndpagarGerente = null;
-				this.obsLancto = "";
-				FacesContext.getCurrentInstance().addMessage(null,
-						new FacesMessage(FacesMessage.SEVERITY_INFO, "Liberado", "Liberado"));
-				this.voltar();
+		} else {
+			validaNroRemessa = true;
+		}
+		if (validaNroRemessa) {
+			if (setor == 1) {
+				if (acao == 1) {
+					this.fncDAO.suspenderLiberarLancto(this.pagarLS, acao, setor, this.sessaoMB, this.obsLancto,
+							this.voltarDepto, this.imagemSelecionada.getId());
+					if (this.pagarLS.getReterImposto().trim().equals("S")) {
+						List<sgimpos> impos = this.fncDAO.listarTributos(this.pagarLS.getNrolancto());
+						if (!impos.isEmpty()) {
+							for (sgimpos i : impos) {
+								if (i.getLancto_gerado() > 0) {
+									this.fncDAO.deletarNrolanctoGeradoTributo(i.getLancto_gerado());
+								}
+							}
+						}
+					}
+					this.listarCndpagarContas = null;
+					this.listarCndpagarGerente = null;
+					this.obsLancto = "";
+					this.bloquearDetalhamento(this.pagarLS);
+					FacesContext.getCurrentInstance().addMessage(null,
+							new FacesMessage(FacesMessage.SEVERITY_INFO, "Suspenso", "Suspenso"));
+					RequestContext.getCurrentInstance().execute("PF('suspenderLanctoContas').hide();");
+					this.voltar();
+					this.listarLancto();
+				} else if (acao == 2) {
+					this.fncDAO.suspenderLiberarLancto(this.pagarLS, acao, setor, this.sessaoMB, this.obsLancto,
+							this.voltarDepto, this.imagemSelecionada.getId());
+					this.salvarLanctosTributos(this.pagarLS);
+					this.listarCndpagarContas = null;
+					this.listarCndpagarGerente = null;
+					this.obsLancto = "";
+					this.liberarDetalhamento(this.pagarLS);
+					FacesContext.getCurrentInstance().addMessage(null,
+							new FacesMessage(FacesMessage.SEVERITY_INFO, "Liberado", "Liberado"));
+					this.voltar();
+					this.listarLancto();
+				}
+			} else if (setor == 2) {
+				if (acao == 1) {
+					this.fncDAO.suspenderLiberarLancto(this.pagarLS, acao, setor, this.sessaoMB, this.obsLancto,
+							this.voltarDepto, this.imagemSelecionada.getId());
+
+					if (this.pagarLS.getReterImposto().trim().equals("S")) {
+						List<sgimpos> impos = this.fncDAO.listarTributos(this.pagarLS.getNrolancto());
+						if (!impos.isEmpty()) {
+							for (sgimpos i : impos) {
+								if (i.getLancto_gerado() > 0) {
+									this.fncDAO.deletarNrolanctoGeradoTributo(i.getLancto_gerado());
+								}
+							}
+						}
+					}
+					this.listarCndpagarContas = null;
+					this.listarCndpagarGerente = null;
+					this.obsLancto = "";
+					this.bloquearDetalhamento(this.pagarLS);
+					FacesContext.getCurrentInstance().addMessage(null,
+							new FacesMessage(FacesMessage.SEVERITY_INFO, "Suspenso", "Suspenso"));
+					RequestContext.getCurrentInstance().execute("PF('suspenderLancto').hide();");
+					this.voltar();
+					this.listarLancto();
+				} else if (acao == 2) {
+					this.fncDAO.suspenderLiberarLancto(this.pagarLS, acao, setor, this.sessaoMB, this.obsLancto,
+							this.voltarDepto, this.imagemSelecionada.getId());
+					this.salvarLanctosTributos(this.pagarLS);
+					this.listarCndpagarContas = null;
+					this.listarCndpagarGerente = null;
+					this.obsLancto = "";
+					this.liberarDetalhamento(this.pagarLS);
+					FacesContext.getCurrentInstance().addMessage(null,
+							new FacesMessage(FacesMessage.SEVERITY_INFO, "Liberado", "Liberado"));
+					this.voltar();
+					this.listarLancto();
+				}
 			}
 		}
+
 	}
 
 	public void liberarPagamentoBoleto(int acao, int setor) {
 		try {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			this.fncDAO.liberarPagBoleto(this.cndpagar, this.sessaoMB, this.obsLancto);
 			this.listarCndpagarContas = null;
 			this.listarCndpagarGerente = null;
@@ -5293,14 +6030,63 @@ public class GED extends Mensagens {
 	}
 
 	public void reprovarSIPLancamento(int setor) {
-		this.cndpagar.setUsuarioAprovacao(null);
-		this.fncDAO = new FinanceiroDAO();
-		this.cndpagar.setReprovadoGerente(1);
-		this.fncDAO.reprovarSipLancamento(this.cndpagar, setor, this.sessaoMB, this.obsLancto);
+		this.fncDAO = new FinanceiroDao();
 
-		this.fncDAO.excluirLanctoSIGA(this.cndpagar);
+		List<Object[]> listaExclusao = new ArrayList<>();
+		listaExclusao = this.fncDAO.listarSigadmExclusao(this.cndpagar);
+		if (!listaExclusao.isEmpty()) {
+			for (Object[] obj : listaExclusao) {
+				if (obj[0] == null || obj[0].toString().isEmpty()) {
 
-		this.fncDAO.excluirTributos(this.cndpagar);
+					this.cndpagar.setUsuarioAprovacao(null);
+					this.cndpagar.setReprovadoGerente(1);
+					this.fncDAO.reprovarSipLancamento(this.cndpagar, setor, this.sessaoMB, this.obsLancto);
+
+					this.fncDAO.excluirLanctoSIGA(this.cndpagar);
+
+					reprovacaoGerente();
+
+					if (setor == 2) {
+						RequestContext.getCurrentInstance().execute("PF('reprovarLancto').hide();");
+					}
+
+				} else {
+					this.msgExclusaoLanctoContas();
+					RequestContext.getCurrentInstance().execute("frmLancto:msg0");
+				}
+			}
+		} else {
+			reprovacaoGerente();
+		}
+	}
+
+	public void reprovacaoGerente() {
+		this.fncDAO = new FinanceiroDao();
+		if (this.cndpagar.getReterImposto() != null && this.cndpagar.getReterImposto().trim().equals("S")) {
+			List<sgimpos> impos = this.fncDAO.listarTributos(this.cndpagar.getNrolancto());
+			List<sgimpos> valida = new ArrayList<>();
+			if (!impos.isEmpty()) {
+				for (sgimpos i : impos) {
+					if (i.getLancto_gerado() > 0) {
+						int valor2 = this.fncDAO.deletarNrolanctoGeradoTributo(i.getLancto_gerado());
+						if (valor2 == 0) {
+							valida.add(i);
+						} else {
+							this.fncDAO.excluirTributoSgimposSigadm(this.cndpagar.getNrolancto(), i.getTipo_imposto());
+						}
+					} else if (i.getLancto_gerado() == 0) {
+						this.fncDAO.excluirTributoSgimposSigadm(this.cndpagar.getNrolancto(), i.getTipo_imposto());
+					} else {
+						valida.add(i);
+					}
+				}
+				if (valida.isEmpty()) {
+					this.fncDAO.excluirTributosSgltimpSgretenSigadm(this.cndpagar.getNrolancto());
+				}
+			}
+		}
+
+		this.bloquearDetalhamento(this.cndpagar);
 
 		FacesContext.getCurrentInstance().addMessage(null,
 				new FacesMessage(FacesMessage.SEVERITY_INFO, "Reprovado!", "Reprovado!"));
@@ -5311,13 +6097,13 @@ public class GED extends Mensagens {
 	}
 
 	public int listarSuspensoContas() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		int valor = this.fncDAO.listarSuspensoContas();
 		return valor;
 	}
 
 	public int listarSuspensoGerente() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		int valor = this.fncDAO.listarSuspensoGerente();
 		return valor;
 	}
@@ -5326,7 +6112,7 @@ public class GED extends Mensagens {
 		boolean retorno = false;
 		try {
 			this.cndpagar.setUsuarioAprovacao(null);
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			FinanceiroSIPDAO sipDAO = new FinanceiroSIPDAO();
 			if (this.cndpagar.getCondominio() == 4241) {
 				short contaGrau1 = this.fncDAO.listarContaBancaria(this.cndpagar.getConta());
@@ -5334,8 +6120,9 @@ public class GED extends Mensagens {
 			}
 			// String val = this.fncDAO.adicionarLanctoSiga(this.cndpagar,
 			// sessaoMB.getUsuario().getEmail(), "oma", this.obsLancto);
-			this.cndpagar.setEstimado("P");
-			retorno = sipDAO.adicionarLanctoSigaLiberar(this.cndpagar, sessaoMB, "oma", this.obsLancto, this.imagemSelecionada.getId());
+			this.cndpagar.setEstimado("R");
+			retorno = sipDAO.adicionarLanctoSigaLiberar(this.cndpagar, this.sessaoMB, "oma", this.obsLancto,
+					this.imagemSelecionada.getId());
 
 		} catch (Exception e) {
 			FacesContext.getCurrentInstance().addMessage(null,
@@ -5346,7 +6133,7 @@ public class GED extends Mensagens {
 	}
 
 	public int quantidadeSuspensoLancto() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		int valor = this.fncDAO.quantidadeSuspensoLancto();
 		return valor;
 	}
@@ -5354,73 +6141,156 @@ public class GED extends Mensagens {
 	public int quantidadeSuspensoGerente() {
 		int valor = 0;
 		if (this.sessaoMB.getGerenteSelecionado() != null) {
-			this.fncDAO = new FinanceiroDAO();
+			this.fncDAO = new FinanceiroDao();
 			valor = this.fncDAO.quantidadeSuspensoGerente(this.sessaoMB);
 		}
 		return valor;
 	}
 
 	public int quantidadeVenctoLancto() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		int valor = this.fncDAO.quantidadeVencimentoLancto();
 		return valor;
 	}
 
 	public int quantidadeVenctoGerente() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		int valor = this.fncDAO.quantidadeVencimentoGerente();
+		this.qtdaVenctoGerenteRed = valor;
+		this.qtdaVenctoGerenteYellow = valor;
 		return valor;
 	}
 
 	public void salvarSIPSIGAGER() {
-		this.cndpagar.setUsuarioAprovacao(null);
-		this.fncDAO = new FinanceiroDAO();
+		try {
+			this.cndpagar.setUsuarioAprovacao(null);
+			this.fncDAO = new FinanceiroDao();
+			if (this.contaContabil != null && !this.contaContabil.trim().isEmpty()) {
+				this.cndpagar.setConta(Integer.parseInt(this.contaContabil));
+				this.cndpagar.setCtaAnlFinanc(Integer.valueOf(this.cndplano.getCodigo_grafico()));
+			} else {
+				this.cndpagar.setConta(0);
+				this.cndpagar.setCtaAnlFinanc(0);
+			}
+			if (this.complemento != null && !this.complemento.isEmpty()) {
+				this.cndpagar.setHist(this.complemento);
+			}
+			this.cndpagar.setStatusSIP(5);
+			this.cndpagar.setVistoGerente(true);
+			this.cndpagar.setFeitoGerenteSIP(new Date());
+			this.cndpagar.setReprovadoGerente(0);
 
-		this.cndpagar.setStatusSIP(5);
-		this.cndpagar.setVistoGerente(true);
-		this.cndpagar.setFeitoGerenteSIP(new Date());
-		this.cndpagar.setReprovadoGerente(0);
+			this.fncDAO.adicionaLanctoSIP(this.cndpagar, this.sessaoMB, this.obsLancto);
 
-		this.fncDAO.adicionaLanctoSIP(this.cndpagar, this.sessaoMB, this.obsLancto);
+			this.fncDAO.updateCndpagarSIGAGER(this.cndpagar);
+			this.fncDAO.updateSGLTIMP(this.cndpagar);
+			this.fncDAO.updateSGIMPOS(this.cndpagar);
 
-		this.fncDAO.updateSGLTIMP(this.cndpagar);
-		this.fncDAO.updateSGIMPOS(this.cndpagar);
-
-		FacesContext.getCurrentInstance().addMessage(null,
-				new FacesMessage(FacesMessage.SEVERITY_INFO, "Salvo!", "Salvo!"));
-		RequestContext.getCurrentInstance().update("frmPreLancto:msg0");
-		this.listarCndpagarGerente = null;
-		this.obsLancto = "";
+			FacesContext.getCurrentInstance().addMessage(null,
+					new FacesMessage(FacesMessage.SEVERITY_INFO, "Salvo!", "Salvo!"));
+			// RequestContext.getCurrentInstance().update("frmPreLancto:msg0");
+			this.listarCndpagarGerente = null;
+			this.obsLancto = "";
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
 	}
 
 	public void listarTributos(cndpagar pagar) {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		this.listaDeTributos = null;
 		if (this.listaDeTributos == null) {
 			this.listaDeTributos = this.fncDAO.listarTributos(pagar);
 		}
 	}
 
+	/*
+	 * public void notificacaoLancamento(cndpagar pagar) { this.fncDAO = new
+	 * FinanceiroDao(); this.cndpagar = pagar; this.listaDeDuplicidade =
+	 * this.fncDAO.pesquisarDuplicidade(pagar).ite;
+	 * 
+	 * Iterator<cndpagar> iterator = this.listaDeDuplicidade.iterator();
+	 * 
+	 * while(iterator.hasNext()){ cndpagar p = iterator.next(); if(p.getCodigo()
+	 * == pagar.getCodigo()){
+	 * 
+	 * } }
+	 * 
+	 * 
+	 * if(!this.listaDeDuplicidade.isEmpty()){ for
+	 * (br.com.oma.omaonline.entidades.cndpagar p : this.listaDeDuplicidade) {
+	 * if(pagar.getCodigo() == p.getCodigo()){
+	 * this.listaDeDuplicidade.remove(p); } } } }
+	 */
+
 	public void notificacaoLancamento(cndpagar pagar) {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
+		this.listaDeDuplicidade = new ArrayList<>();
 		this.cndpagar = pagar;
-		this.listaDeDuplicidade = this.fncDAO.pesquisarDuplicidade(pagar);
+		boolean validaOrigem = false;
+		List<cndpagar> lista = this.fncDAO.pesquisarDuplicidade(pagar);
+		cndpagar p2 = this.fncDAO.pesqLancto(pagar.getCodigo());
+
+		if (!lista.isEmpty()) {
+			if (lista.size() == 1) {
+				if (lista.get(0).getCodigo() != pagar.getCodigo()) {
+					for (cndpagar p : lista) {
+						p.setStatusCorSemelhanca("red");
+						this.listaDeDuplicidade.add(p);
+					}
+					p2.setStatusCorSemelhanca("blue");
+					this.listaDeDuplicidade.add(p2);
+				} else {
+					removerSemelhante2();
+					RequestContext.getCurrentInstance().update("frmPreLancto:dtLancto");
+				}
+			} else {
+				for (cndpagar cndpagar : lista) {
+					if (cndpagar.getCodigo() == p2.getCodigo()) {
+						validaOrigem = true;
+					}
+				}
+				for (cndpagar p : lista) {
+					if (this.cndpagar.getNrolancto() == p.getNrolancto()) {
+						p.setStatusCorSemelhanca("blue");
+					} else {
+						p.setStatusCorSemelhanca("red");
+					}
+					this.listaDeDuplicidade.add(p);
+				}
+				if (!validaOrigem) {
+					p2.setStatusCorSemelhanca("blue");
+					this.listaDeDuplicidade.add(p2);
+				}
+			}
+		} else {
+			removerSemelhante2();
+			RequestContext.getCurrentInstance().update("frmPreLancto:dtLancto");
+		}
+	}
+
+	public void removerSemelhante2() {
+		this.fncDAO = new FinanceiroDao();
+		this.cndpagar.setSemelhante(false);
+		this.cndpagar.setSuspensoGerente(0);
+		this.fncDAO.removerSemelhanca(this.cndpagar, this.sessaoMB);
+		this.msgRemoverSemelhanca();
+		this.listarCndpagarGerente = null;
 	}
 
 	public void removerSemelhante() {
-		this.fncDAO = new FinanceiroDAO();
+		this.fncDAO = new FinanceiroDao();
 		this.cndpagar.setSemelhante(false);
+		this.cndpagar.setSuspensoGerente(0);
 		this.fncDAO.removerSemelhanca(this.cndpagar, this.sessaoMB);
 		this.msgSalvo();
 		this.listarCndpagarGerente = null;
 	}
 
-	public void abreProximoLancamentos() {
+	public void abrirProximoLancamentoContas() {
 		try {
-			this.fncDAO = new FinanceiroDAO();
-			List<cndpagar> l = this.fncDAO.getListaLancamentoContas(this.opcaoLancto,
-					this.sessaoMB.getUsuario().getEmail(), this.filtroCndpagarContasInicial,
-					this.filtroCndpagarContasFinal);
+			this.fncDAO = new FinanceiroDao();
+			List<cndpagar> l = this.fncDAO.getListaProximoLancamentoContas(this.sessaoMB.getUsuario().getEmail());
 			cndpagar c = null;
 			for (cndpagar aux : l) {
 				if (aux.getFeitoFiscalSIP() != null) {
@@ -5445,14 +6315,20 @@ public class GED extends Mensagens {
 	public void estamparCanceladoPDF() {
 		try {
 			LancamentoDAO dao = new LancamentoDAO();
+			this.imagemSelecionada.setImagem(new Imagem().retornaImagemByte(this.imagemSelecionada.getId(),
+					this.imagemSelecionada.getNome_arquivo()));
 			byte[] pdfFinal = PDFUtil.estamparCanceladoPDF(this.imagemSelecionada.getImagem(), this.paginaCancelamento);
 			if (this.imagemDesfazer == null) {
 				this.imagemDesfazer = this.imagemSelecionada;
 			}
 			dao.estamparCanceladoPDF(pdfFinal, this.imagemSelecionada.getCodigo());
+			new Imagem().updateImagem(this.imagemSelecionada.getId(), this.imagemSelecionada.getNome_arquivo(),
+					pdfFinal);
+			this.codigoFollowUp = dao.registrarFollowUp(this.cndpagar.getCodigo(), "Estampa de Cancelamento",
+					this.sessaoMB.getUsuario().getEmail(), this.sessaoMB.getIpUser(), this.cndpagar.getCondominio(),
+					this.departamentoFollowUp, null);
 			if (this.getImagemSelecionada().getId() > 0) {
-				this.imagemSelecionada = dao
-						.pesquisarImagemPorEtiqueta(Double.valueOf(this.imagemSelecionada.getId()).longValue());
+				this.imagemSelecionada = this.financeiroImagem;
 			}
 			RequestContext.getCurrentInstance().execute("PF('dlgCarimbar').hide();");
 		} catch (IntranetException e) {
@@ -5467,9 +6343,11 @@ public class GED extends Mensagens {
 		try {
 			LancamentoDAO dao = new LancamentoDAO();
 			dao.desfazerPDF(this.imagemDesfazer.getImagem(), this.imagemSelecionada.getCodigo());
+			new Imagem().updateImagem(this.imagemSelecionada.getId(), this.imagemSelecionada.getNome_arquivo(),
+					this.imagemDesfazer.getImagem());
+			dao.excluirFollowUp(this.codigoFollowUp);
 			if (this.imagemSelecionada.getId() > 0) {
-				long etiqueta = Double.valueOf(this.imagemSelecionada.getId()).longValue();
-				this.imagemSelecionada = dao.pesquisarImagemPorEtiqueta(etiqueta);
+				this.imagemSelecionada = this.financeiroImagem;
 			}
 			this.imagemDesfazer = null;
 		} catch (Exception e) {
@@ -5481,15 +6359,24 @@ public class GED extends Mensagens {
 			throws IOException, InvalidFormatException, SQLException, java.text.ParseException, ClassNotFoundException {
 		byte[] arquivo = event.getFile().getContents();
 		try {
-			byte[] pdfFinal = PDFUtil.fusaoPDF(arquivo, this.imagemSelecionada.getImagem(), this.pagina);
+			if (this.paginaFusao == null) {
+				this.paginaFusao = 0;
+			}
+			this.imagemSelecionada.setImagem(new Imagem().retornaImagemByte(this.imagemSelecionada.getId(),
+					this.imagemSelecionada.getNome_arquivo()));
+			byte[] pdfFinal = PDFUtil.fusaoPDF(arquivo, this.imagemSelecionada.getImagem(), this.paginaFusao);
 			if (this.imagemDesfazer == null) {
 				this.imagemDesfazer = this.imagemSelecionada;
 			}
 			LancamentoDAO dao = new LancamentoDAO();
 			dao.fundirPDF(pdfFinal, this.imagemSelecionada.getCodigo());
+			new Imagem().updateImagem(this.imagemSelecionada.getId(), this.imagemSelecionada.getNome_arquivo(),
+					pdfFinal);
+			this.codigoFollowUp = dao.registrarFollowUp(this.cndpagar.getCodigo(), "Fusão de Imagem",
+					this.sessaoMB.getUsuario().getEmail(), this.sessaoMB.getIpUser(), this.cndpagar.getCondominio(),
+					this.departamentoFollowUp, null);
 			if (this.imagemSelecionada.getId() > 0) {
-				this.imagemSelecionada = dao
-						.pesquisarImagemPorEtiqueta(Double.valueOf(this.imagemSelecionada.getId()).longValue());
+				this.imagemSelecionada = this.financeiroImagem;
 			}
 			RequestContext.getCurrentInstance().execute("PF('dlgFundir').hide();");
 		} catch (Exception e) {
@@ -5503,9 +6390,11 @@ public class GED extends Mensagens {
 		try {
 			LancamentoDAO dao = new LancamentoDAO();
 			dao.desfazerPDF(this.imagemDesfazer.getImagem(), this.imagemSelecionada.getCodigo());
+			new Imagem().updateImagem(this.imagemSelecionada.getId(), this.imagemSelecionada.getNome_arquivo(),
+					this.imagemDesfazer.getImagem());
+			dao.excluirFollowUp(this.codigoFollowUp);
 			if (this.imagemSelecionada.getId() > 0) {
-				this.imagemSelecionada = dao
-						.pesquisarImagemPorEtiqueta(Double.valueOf(this.imagemSelecionada.getId()).longValue());
+				this.imagemSelecionada = this.financeiroImagem;
 			}
 			this.imagemDesfazer = null;
 		} catch (Exception e) {
@@ -5513,18 +6402,77 @@ public class GED extends Mensagens {
 		}
 	}
 
+	public void exclusaoPreLancto(cndpagar pagar, int depto, String obs, SessaoMB sessao) {
+		this.sessaoMB = sessao;
+		this.suspenderLiberar(pagar);
+		this.obsLancto = obs;
+		this.excluirLancamentoContasSIP(depto);
+	}
+
+	public String getTxtStatus(int statusSIP, int tipoLancamento) {
+		if (statusSIP == 1) {
+			return "Pré-Lancto";
+		}
+		if (statusSIP == 2 && tipoLancamento == 2) {
+			return "Incompleto";
+		}
+		if (statusSIP == 2 && tipoLancamento == 3) {
+			return "Incompleto";
+		}
+		if (statusSIP == 2 && tipoLancamento == 1) {
+			return "Fiscal";
+		}
+		if (statusSIP == 3) {
+			return "Lançamento";
+		}
+		if (statusSIP == 4) {
+			return "Gerente";
+		}
+		if (statusSIP == 5) {
+			return "Aprovado Ger.";
+		}
+		return "";
+	}
+
+	public String getPrimeiroParagrafo(String texto) {
+		try {
+			StringBuffer strBuffer = new StringBuffer();
+			if (texto != null && texto.length() >= 35) {
+				strBuffer.append(texto.substring(0, 34));
+				strBuffer.append("...");
+				return strBuffer.toString();
+			} else {
+				return texto;
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return null;
+	}
+
+	public void abrirImagemTbl(int codigo) {
+		try {
+			FinanceiroDao dao = new FinanceiroDao();
+			byte[] pdf = dao.pesquisaPDF(codigo);
+			DownloadUtil.downloadPDF(codigo + ".pdf", pdf);
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+
 	public void salvarDetalhamento() throws ParseException {
 		ControleContasNovoDAO ccnDAO = new ControleContasNovoDAO();
-		intra_controle_contas2 icc2 = new intra_controle_contas2();
+		DateTime data = new DateTime(this.iccd.getVencimento());
+		int ano = 0;
+		ano = Integer.valueOf(data.getYear());
 		this.iccd.setCondominio(this.cndpagar.getCondominio());
 		this.iccd.setVencimento(this.cndpagar.getVencimento());
-		this.iccd.setCnpj(String.valueOf(this.cndpagar.getCnpj()));
+		this.iccd.setCnpj(String.valueOf(this.cndpagar.getFornecedorCnpj()));
 		this.iccd.setNomeFornecedor(this.fornecedorSelecionado.getNome());
-		this.setLdValor(this.getLdValor().replace("R$ ", ""));
 		this.iccd.setValorLiquido(this.cndpagar.getValor());
 		this.iccd.setValorBruto(this.cndpagar.getValorLancto());
 		this.iccd.setValorRetencao(this.iccd.getValorBruto() - this.iccd.getValorLiquido());
-		if (this.cndpagar.getParcelado().equals("N")) {
+		if (this.cndpagar.getParcelado() != null && this.cndpagar.getParcelado().equals("N")) {
 			this.iccd.setParcelado(false);
 		} else {
 			this.iccd.setParcelado(true);
@@ -5532,33 +6480,86 @@ public class GED extends Mensagens {
 		this.iccd.setConta(this.cndpagar.getConta());
 		this.iccd.setHist(this.cndpagar.getHist());
 		this.iccd.setHistorico(this.cndpagar.getHistorico());
-		this.iccd.setNroEtiqueta(this.imagemSelecionada.getCodigo());
+		this.iccd.setNroEtiqueta(this.listaArquivos.get(0).getId());
 		this.iccd.setNroLancto(this.cndpagar.getNrolancto());
+		this.iccd.setStatus("L");
+		List<intra_controle_contas2> listaConta = ccnDAO.listarContas2(this.iccd.getCondominio(), ano);
+		if (listaConta != null) {
+			for (intra_controle_contas2 ic : listaConta) {
+				if (ic.getCondominio() == this.iccd.getCondominio() && ic.getCnpj().equals(this.iccd.getCnpj())
+						&& ic.getConta() == this.iccd.getConta()) {
+					/*
+					 * List<intra_controle_contas_detalhamento> listaLancto =
+					 * ccnDAO .listaLancto(this.iccd.getNroLancto()); if
+					 * (listaLancto != null) { for
+					 * (intra_controle_contas_detalhamento d : listaLancto) { if
+					 * (d.getNroLancto() == this.iccd.getNroLancto()) {
+					 * this.iccd.setControleContas(true); } } } else {
+					 */
+					this.controleContasNovo(ic);
+					this.iccd.setControleContas(true);
+					/* } */
+				}
+			}
+		} else {
+			this.iccd.setControleContas(false);
+		}
+		ccnDAO.salvarDetalhamentoPreLancto(this.iccd);
+		this.iccd = new intra_controle_contas_detalhamento();
+	}
 
+	public void bloquearDetalhamento(cndpagar lancto) {
+		ControleContasNovoDAO ccnDAO = new ControleContasNovoDAO();
+		this.iccd.setCondominio(lancto.getCondominio());
+		this.iccd.setCnpj(String.valueOf(lancto.getFornecedorCnpj()));
+		this.iccd.setConta(lancto.getConta());
+		this.iccd.setVencimento(lancto.getVencimento());
+		this.iccd.setValorBruto(lancto.getValorLancto());
+		ccnDAO.bloquearDetalhamento(this.iccd);
 		DateTime data = new DateTime(this.iccd.getVencimento());
 		int ano = 0;
+		int mes = 0;
 		ano = Integer.valueOf(data.getYear());
+		mes = Integer.valueOf(data.getMonthOfYear());
 		List<intra_controle_contas2> listaConta = ccnDAO.listarContas2(this.iccd.getCondominio(), ano);
-		if (listaConta == null || listaConta.isEmpty()) {
-			icc2.setCondominio(this.iccd.getCondominio());
-			icc2.setCnpj(this.iccd.getCnpj());
-			icc2.setConta(this.iccd.getConta());
-			icc2.setCodigoGerente(this.sessaoMB.getGerenteSelecionado().getCodigo());
-			icc2.setAno(ano);
-			ccnDAO.salvarConta(icc2);
-			this.controleContasNovo(icc2);
-		}
-		for (intra_controle_contas2 ic : listaConta) {
-			if (ic.getCondominio() == this.iccd.getCondominio() && ic.getCnpj() == this.iccd.getCnpj()
-					&& ic.getConta() == this.iccd.getConta()) {
-				ic = icc2;
-				this.controleContasNovo(icc2);
-			} else {
-
+		if (this.iccd.isBloqueado() == true) {
+			if (listaConta != null) {
+				for (intra_controle_contas2 ic : listaConta) {
+					if (ic.getCondominio() == this.iccd.getCondominio() && ic.getCnpj().equals(this.iccd.getCnpj())
+							&& ic.getConta() == this.iccd.getConta()) {
+						this.bloquearControleContasNovo(ic, mes);
+					}
+				}
 			}
 		}
+		this.iccd = new intra_controle_contas_detalhamento();
+	}
 
-		ccnDAO.salvarDetalhamentoPreLancto(this.iccd);
+	public void liberarDetalhamento(cndpagar lancto) {
+		ControleContasNovoDAO ccnDAO = new ControleContasNovoDAO();
+		this.iccd.setCondominio(lancto.getCondominio());
+		this.iccd.setCnpj(String.valueOf(lancto.getFornecedorCnpj()));
+		this.iccd.setConta(lancto.getConta());
+		this.iccd.setVencimento(lancto.getVencimento());
+		this.iccd.setValorBruto(lancto.getValorLancto());
+		ccnDAO.desbloquearDetalhamento(this.iccd);
+		DateTime data = new DateTime(this.iccd.getVencimento());
+		int ano = 0;
+		int mes = 0;
+		ano = Integer.valueOf(data.getYear());
+		mes = Integer.valueOf(data.getMonthOfYear());
+		List<intra_controle_contas2> listaConta = ccnDAO.listarContas2(this.iccd.getCondominio(), ano);
+		if (this.iccd.isBloqueado() == false) {
+			if (listaConta != null) {
+				for (intra_controle_contas2 ic : listaConta) {
+					if (ic.getCondominio() == this.iccd.getCondominio() && ic.getCnpj().equals(this.iccd.getCnpj())
+							&& ic.getConta() == this.iccd.getConta()) {
+						this.liberarControleContasNovo(ic, mes);
+					}
+				}
+			}
+		}
+		this.iccd = new intra_controle_contas_detalhamento();
 	}
 
 	public void controleContasNovo(intra_controle_contas2 ic) {
@@ -5568,52 +6569,305 @@ public class GED extends Mensagens {
 		double valor = 0;
 		mes = Integer.valueOf(data.getMonthOfYear());
 		if (mes == 1) {
-			valor = ic.getJaneiro() + this.iccd.getValorLiquido();
+			valor = ic.getJaneiro() + this.iccd.getValorBruto();
 			ccnDAO.updateJaneiro(ic, valor);
 		}
 		if (mes == 2) {
-			valor = ic.getFevereiro() + this.iccd.getValorLiquido();
+			valor = ic.getFevereiro() + this.iccd.getValorBruto();
 			ccnDAO.updateFevereiro(ic, valor);
 		}
 		if (mes == 3) {
-			valor = ic.getMarco() + this.iccd.getValorLiquido();
+			valor = ic.getMarco() + this.iccd.getValorBruto();
 			ccnDAO.updateMarço(ic, valor);
 		}
 		if (mes == 4) {
-			valor = ic.getAbril() + this.iccd.getValorLiquido();
+			valor = ic.getAbril() + this.iccd.getValorBruto();
 			ccnDAO.updateAbril(ic, valor);
 		}
 		if (mes == 5) {
-			valor = ic.getMaio() + this.iccd.getValorLiquido();
+			valor = ic.getMaio() + this.iccd.getValorBruto();
 			ccnDAO.updateMaio(ic, valor);
 		}
 		if (mes == 6) {
-			valor = ic.getJunho() + this.iccd.getValorLiquido();
+			valor = ic.getJunho() + this.iccd.getValorBruto();
 			ccnDAO.updateJunho(ic, valor);
 		}
 		if (mes == 7) {
-			valor = ic.getJulho() + this.iccd.getValorLiquido();
+			valor = ic.getJulho() + this.iccd.getValorBruto();
 			ccnDAO.updateJulho(ic, valor);
 		}
 		if (mes == 8) {
-			valor = ic.getAgosto() + this.iccd.getValorLiquido();
+			valor = ic.getAgosto() + this.iccd.getValorBruto();
 			ccnDAO.updateAgosto(ic, valor);
 		}
 		if (mes == 9) {
-			valor = ic.getSetembro() + this.iccd.getValorLiquido();
+			valor = ic.getSetembro() + this.iccd.getValorBruto();
 			ccnDAO.updateSetembro(ic, valor);
 		}
 		if (mes == 10) {
-			valor = ic.getOutubro() + this.iccd.getValorLiquido();
+			valor = ic.getOutubro() + this.iccd.getValorBruto();
 			ccnDAO.updateOutubro(ic, valor);
 		}
 		if (mes == 11) {
-			valor = ic.getNovembro() + this.iccd.getValorLiquido();
+			valor = ic.getNovembro() + this.iccd.getValorBruto();
 			ccnDAO.updateNovembro(ic, valor);
 		}
 		if (mes == 12) {
-			valor = ic.getDezembro() + this.iccd.getValorLiquido();
+			valor = ic.getDezembro() + this.iccd.getValorBruto();
 			ccnDAO.updateDezembro(ic, valor);
+		}
+	}
+
+	public void bloquearControleContasNovo(intra_controle_contas2 ic, int mes) {
+		ControleContasNovoDAO ccnDAO = new ControleContasNovoDAO();
+		double valor = 0;
+		if (mes == 1) {
+			valor = ic.getJaneiro() - this.iccd.getValorBruto();
+			ccnDAO.updateJaneiro(ic, valor);
+		}
+		if (mes == 2) {
+			valor = ic.getFevereiro() - this.iccd.getValorBruto();
+			ccnDAO.updateFevereiro(ic, valor);
+		}
+		if (mes == 3) {
+			valor = ic.getMarco() - this.iccd.getValorBruto();
+			ccnDAO.updateMarço(ic, valor);
+		}
+		if (mes == 4) {
+			valor = ic.getAbril() - this.iccd.getValorBruto();
+			ccnDAO.updateAbril(ic, valor);
+		}
+		if (mes == 5) {
+			valor = ic.getMaio() - this.iccd.getValorBruto();
+			ccnDAO.updateMaio(ic, valor);
+		}
+		if (mes == 6) {
+			valor = ic.getJunho() - this.iccd.getValorBruto();
+			ccnDAO.updateJunho(ic, valor);
+		}
+		if (mes == 7) {
+			valor = ic.getJulho() - this.iccd.getValorBruto();
+			ccnDAO.updateJulho(ic, valor);
+		}
+		if (mes == 8) {
+			valor = ic.getAgosto() - this.iccd.getValorBruto();
+			ccnDAO.updateAgosto(ic, valor);
+		}
+		if (mes == 9) {
+			valor = ic.getSetembro() - this.iccd.getValorBruto();
+			ccnDAO.updateSetembro(ic, valor);
+		}
+		if (mes == 10) {
+			valor = ic.getOutubro() - this.iccd.getValorBruto();
+			ccnDAO.updateOutubro(ic, valor);
+		}
+		if (mes == 11) {
+			valor = ic.getNovembro() - this.iccd.getValorBruto();
+			ccnDAO.updateNovembro(ic, valor);
+		}
+		if (mes == 12) {
+			valor = ic.getDezembro() - this.iccd.getValorBruto();
+			ccnDAO.updateDezembro(ic, valor);
+		}
+	}
+
+	public void liberarControleContasNovo(intra_controle_contas2 ic, int mes) {
+		ControleContasNovoDAO ccnDAO = new ControleContasNovoDAO();
+		double valor = 0;
+		if (mes == 1) {
+			valor = ic.getJaneiro() + this.iccd.getValorBruto();
+			ccnDAO.updateJaneiro(ic, valor);
+		}
+		if (mes == 2) {
+			valor = ic.getFevereiro() + this.iccd.getValorBruto();
+			ccnDAO.updateFevereiro(ic, valor);
+		}
+		if (mes == 3) {
+			valor = ic.getMarco() + this.iccd.getValorBruto();
+			ccnDAO.updateMarço(ic, valor);
+		}
+		if (mes == 4) {
+			valor = ic.getAbril() + this.iccd.getValorBruto();
+			ccnDAO.updateAbril(ic, valor);
+		}
+		if (mes == 5) {
+			valor = ic.getMaio() + this.iccd.getValorBruto();
+			ccnDAO.updateMaio(ic, valor);
+		}
+		if (mes == 6) {
+			valor = ic.getJunho() + this.iccd.getValorBruto();
+			ccnDAO.updateJunho(ic, valor);
+		}
+		if (mes == 7) {
+			valor = ic.getJulho() + this.iccd.getValorBruto();
+			ccnDAO.updateJulho(ic, valor);
+		}
+		if (mes == 8) {
+			valor = ic.getAgosto() + this.iccd.getValorBruto();
+			ccnDAO.updateAgosto(ic, valor);
+		}
+		if (mes == 9) {
+			valor = ic.getSetembro() + this.iccd.getValorBruto();
+			ccnDAO.updateSetembro(ic, valor);
+		}
+		if (mes == 10) {
+			valor = ic.getOutubro() + this.iccd.getValorBruto();
+			ccnDAO.updateOutubro(ic, valor);
+		}
+		if (mes == 11) {
+			valor = ic.getNovembro() + this.iccd.getValorBruto();
+			ccnDAO.updateNovembro(ic, valor);
+		}
+		if (mes == 12) {
+			valor = ic.getDezembro() + this.iccd.getValorBruto();
+			ccnDAO.updateDezembro(ic, valor);
+		}
+	}
+
+	public void listarContaPorCondominio(int condo, String cnpj) {
+		try {
+			ControleContasNovoDAO ccnDAO = new ControleContasNovoDAO();
+			this.listaContasCNPJ2 = new ArrayList<>();
+			this.listaContasCNPJ2 = ccnDAO.listarContasCNPJ2(condo, cnpj);
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+
+	public void selecionarConta() {
+		if (this.planoContas != null) {
+			this.contaContabil = this.planoContas.getCodReduzido();
+			this.nomeConta = this.planoContas.getNome();
+			this.nomeCapa = this.planoContas.getNomeCapa();
+			this.pesquisaContaCod();
+			RequestContext.getCurrentInstance().execute("PF('dlgContaCNPJ').hide();");
+		}
+	}
+
+	public String qtdaIncompletos() {
+		try {
+			this.service = new GEDService();
+			int retorno = this.service.qtdaIncompletos(this.sessaoMB.getGerenteSelecionado().getCodigo());
+			if (retorno != 0) {
+				return String.valueOf(retorno);
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return "";
+	}
+
+	public String qtdaSuspensos() {
+		try {
+			this.service = new GEDService();
+			int retorno = this.service.qtdaSuspensos(this.sessaoMB.getGerenteSelecionado().getCodigo());
+			if (retorno != 0) {
+				return String.valueOf(retorno);
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return "";
+	}
+
+	public String qtdaVencidos() {
+		try {
+			this.service = new GEDService();
+			int retorno = this.service.qtdaVencidos(this.sessaoMB.getGerenteSelecionado().getCodigo());
+			if (retorno != 0) {
+				return String.valueOf(retorno);
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return "";
+	}
+
+	public void salvarLanctosTributos(cndpagar pagar) {
+		this.fncDAO = new FinanceiroDao();
+		this.service = new GEDService();
+		List<sgimpos> lista = this.fncDAO.listarImposSiga(pagar.getNrolancto());
+		if (!lista.isEmpty()) {
+			ConstroiTributosCndPagarAUX aux = new ConstroiTributosCndPagarAUX();
+			if (this.sessaoMB.getUsuario().getUsuarioWeb() != null
+					&& !this.sessaoMB.getUsuario().getUsuarioWeb().isEmpty()) {
+				this.cndpagar.setUsuarioWeb(this.sessaoMB.getUsuario().getUsuarioWeb());
+			}
+			for (sgimpos impos : lista) {
+
+				String numeroNota = "";
+
+				cndpagar lancto = aux.constroiCndPagar(this.cndpagar, impos);
+				String nomeFornecedor = this.service.retornaNomeCredor(this.cndpagar.getCredor());
+				List<String> nomeCondominio = this.service.retornaNomeCondominio(this.cndpagar.getCondominio());
+				double cnpf = this.service.retornaCNPJCredo(this.cndpagar.getCredor());
+
+				if (impos.getNumero_nf() != null && !impos.getNumero_nf().isEmpty()) {
+					numeroNota = impos.getNumero_nf();
+				} else if (pagar.getNumeroNf() != null) {
+					numeroNota = String.valueOf(pagar.getNumeroNf());
+				}
+
+				if (impos.getTipo_imposto() == 1) {
+					lancto.setHistorico("INSS " + numeroNota + " " + nomeFornecedor);
+					lancto.setCnpj(cnpf);
+					lancto.setCodPagto((int) impos.getCod_receita());
+					lancto.setCodReceita((int) impos.getCod_receita());
+					lancto.setContribuinte(nomeFornecedor);
+				} else if (impos.getTipo_imposto() == 2) {
+					lancto.setHistorico("ISS " + numeroNota + " " + nomeFornecedor);
+					lancto.setCodPagto((int) impos.getCod_receita());
+					lancto.setCodReceita((int) impos.getCod_receita());
+				} else if (impos.getTipo_imposto() == 3) {
+					lancto.setHistorico("IRRF " + numeroNota + " " + nomeFornecedor);
+					lancto.setCodPagto((int) impos.getCod_receita());
+					lancto.setCodReceita((int) impos.getCod_receita());
+				} else if (impos.getTipo_imposto() == 4) {
+					lancto.setHistorico("CSLL/COFINS/PIS " + numeroNota + " " + nomeFornecedor);
+					lancto.setCodPagto((int) impos.getCod_receita());
+					lancto.setCodReceita((int) impos.getCod_receita());
+					lancto.setContribuinte(nomeCondominio.get(0));
+					lancto.setCnpj(Double.valueOf(nomeCondominio.get(1)));
+				}
+				lancto.setDocumento(this.service.retornoDocumento(this.cndpagar.getNrolancto()));
+				if (impos.getTipo_imposto() != 2) {
+					lancto.setNrolancto(this.service.retornaNroLanctoSiga());
+					this.service.salvarLanctoImposto(lancto);
+					this.service.updateManutecaoImpostos(lancto.getNrolancto(), this.cndpagar.getNrolancto(),
+							impos.getTipo_imposto());
+				}
+
+				lancto = new cndpagar();
+			}
+		}
+	}
+
+	public void novoMovimentoAPartirDeLancamento() {
+		try {
+			FacesContext fc = FacesContext.getCurrentInstance();
+			NavigationHandler nh = fc.getApplication().getNavigationHandler();
+			nh.handleNavigation(fc, null,
+					"/entrada-saida/nova-entrada-saida.xhtml?faces-redirect=true&procedimento=lancamento&codigoLancamento="
+							+ this.cndpagar.getCodigo());
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+
+	public boolean isRenderizaBotaoNovoMovimentoAPartirDeLancamento() {
+		try {
+			if (this.cndpagar != null) {
+				if (this.proxima2 && this.cndpagar.getTipoLancamento() == 3) {
+					return true;
+				} else {
+					return false;
+				}
+			} else {
+				return false;
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+			return false;
 		}
 	}
 }
